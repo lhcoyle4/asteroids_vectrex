@@ -1,0 +1,27 @@
+# Build artifacts
+*.exe
+*.dll
+*.o
+*.a
+*.so
+build/
+dist/
+*.wasm
+
+# Dependencies
+SDL2.dll
+SDL2_mixer.dll
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Game data
+highscores.dat

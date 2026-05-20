@@ -1,0 +1,2264 @@
+#include "game.h"
+#include "vector_graphics.h"
+#include "vector_font.h"
+#include "audio.h"
+#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+extern SDL_Window *g_window;
+
+// Constants
+#define MAX_ASTEROIDS 32
+#define MAX_BULLETS 48
+#define MAX_UFO_BULLETS 32
+#define MAX_PARTICLES 128
+#define MAX_ORBS 100
+#define MAX_TRAIL_POINTS 40
+#define PHOS_TRAIL_LEN 14
+#define FRICTION 0.99f
+#define ROTATION_SPEED 4.5f
+#define THRUST_FORCE 350.0f
+#define BULLET_SPEED 600.0f
+#define BULLET_LIFE 1.2f
+
+#define MAX_MINES 8
+#define MAX_POWERUPS 4
+
+typedef enum {
+    DIFFICULTY_EASY,
+    DIFFICULTY_NORMAL,
+    DIFFICULTY_HARD,
+    DIFFICULTY_ACE
+} Difficulty;
+
+typedef enum {
+    STATE_TITLE,
+    STATE_PLAYING,
+    STATE_PAUSED,
+    STATE_GAMEOVER,
+    STATE_NEW_HIGHSCORE,
+    STATE_UPGRADE_SELECT,
+    STATE_HIGHSCORES,
+    STATE_SETTINGS,
+    STATE_ATTRACT_INSTRUCTIONS,
+    STATE_ATTRACT_GAMEPLAY
+} GameState;
+
+// Cheat tracking
+static int god_mode = 0;
+
+typedef struct {
+    char initials[4];
+    int score;
+} HighScore;
+
+typedef struct {
+    Vec2 pos;
+    Vec2 vel;
+    float angle;
+    float rot_speed;
+    float scale;
+    float life;
+    float max_life;
+    SDL_Color color;
+} Particle;
+
+typedef struct {
+    Vec2 pos;
+    float alpha;
+    float size;
+} TrailPoint;
+
+// Entities
+typedef struct {
+    int active;
+    Vec2 pos;
+    Vec2 vel;
+    float angle;
+    float rot_speed;
+    float radius;
+    int size; // 3 = Large, 2 = Medium, 1 = Small
+    Line lines[16];
+    int line_count;
+    float bullet_cooldown;
+    float invuln_timer;
+    TrailPoint trail[MAX_TRAIL_POINTS];
+    int trail_idx;
+} ShipEntity;
+
+typedef struct {
+    int active;
+    Vec2 pos;
+    Vec2 vel;
+    float angle;
+    float rot_speed;
+    float radius;
+    int size; // 3, 2, 1
+    Line lines[16];
+    int line_count;
+    int has_shield; // 1 = shielded asteroid (Level >= 3)
+    Vec2 trail_pos[PHOS_TRAIL_LEN];
+    float trail_ang[PHOS_TRAIL_LEN];
+    int trail_head;
+} AsteroidEntity;
+
+typedef struct {
+    int active;
+    Vec2 pos;
+    Vec2 vel;
+    float life;
+    SDL_Color color;
+    int bounces;
+    int pierces;
+    int is_homing;
+    Vec2 trail_pos[PHOS_TRAIL_LEN];
+    float trail_ang[PHOS_TRAIL_LEN];
+    int trail_head;
+} BulletEntity;
+
+typedef struct {
+    int active;
+    Vec2 pos;
+    Vec2 vel;
+    int size;
+    float radius;
+    Line lines[16];
+    int line_count;
+    float fire_timer;
+    float change_dir_timer;
+    float target_y;
+    float scream_timer;
+    Vec2 trail_pos[PHOS_TRAIL_LEN];
+    float trail_ang[PHOS_TRAIL_LEN];
+    int trail_head;
+} UfoEntity;
+
+typedef struct {
+    int active;
+    Vec2 pos;
+    Vec2 vel;
+    float radius;
+    float fuse_timer;
+    float flash_timer;
+    int flash_state;
+} MineEntity;
+
+typedef struct {
+    int active;
+    Vec2 pos;
+    Vec2 vel;
+    float radius;
+    float angle;
+    float rot_speed;
+    float life; // expires after 8 seconds
+} PowerupEntity;
+
+typedef struct {
+    int active;
+    Vec2 pos;
+    float radius;
+    float angle1;
+    float angle2;
+    float pulse_timer;
+    float spawn_timer;
+} RiftEntity;
+
+typedef struct {
+    int active;
+    Vec2 pos;
+    Vec2 vel;
+    int value;
+    float life;
+    Vec2 trail_pos[PHOS_TRAIL_LEN];
+    float trail_ang[PHOS_TRAIL_LEN];
+    int trail_head;
+} OrbEntity;
+
+typedef struct {
+    int active;
+    Vec2 pos;
+    float radius;
+    float max_radius;
+    float thickness;
+    float life;
+} ShockwaveEntity;
+
+typedef enum {
+    UPGRADE_TRIPLE_SHOT,
+    UPGRADE_BOUNCE,
+    UPGRADE_SHIELD,
+    UPGRADE_RAPID_FIRE,
+    UPGRADE_PIERCING,
+    UPGRADE_SPEED,
+    UPGRADE_SIZE_DOWN,
+    UPGRADE_HOMING,
+    UPGRADE_GHOST_SIGHT,
+    UPGRADE_VOID_ROUNDS,
+    UPGRADE_TIME_WARP,
+    UPGRADE_ORB_MAGNET,
+    UPGRADE_OVERCHARGE,
+    UPGRADE_MIRROR_IMAGE,
+    UPGRADE_REAR_GUN,
+    UPGRADE_ORBITAL_MINE,
+    UPGRADE_CRIT_CHANCE,
+    UPGRADE_HEALTH_BOOST,
+    UPGRADE_THRUST_TRAIL,
+    UPGRADE_SPLIT_SHOT,
+    UPGRADE_VORTEX_GRENADE,
+    UPGRADE_PHASE_SHIFT,
+    UPGRADE_AUTO_TURRET,
+    UPGRADE_NOVA_EXPLOSION,
+    UPGRADE_XP_BOOST,
+    UPGRADE_ARMOR_PLATE,
+    UPGRADE_THERMAL_HULL,
+    UPGRADE_SINGULARITY_DISPLACER,
+    UPGRADE_SINGULARITY_WHIP,
+    UPGRADE_RESONANCE_CASCADE,
+    UPGRADE_COUNT // Always at the end
+} UpgradeType;
+
+typedef struct {
+    int triple_shot;
+    int max_bounces;
+    float fire_cooldown_mult;
+    float bullet_speed_mult;
+    int shield_active;
+    float speed_mult;
+    int piercing;
+    float size_mult;
+    int homing;
+    float magnet_radius;
+    int rear_gun;
+    int split_shot;
+    float xp_mult;
+    int mirror_image;
+    int phase_shift;
+    int thermal_hull;
+    int singularity_displacer;
+    int singularity_whip;
+    int resonance_cascade;
+} PlayerUpgrades;
+
+// Game Global Variables
+static GameState game_state = STATE_TITLE;
+static Difficulty difficulty = DIFFICULTY_NORMAL;
+static HighScore high_scores[5];
+static int new_high_score_idx = -1;
+static char temp_initials[4] = "A  ";
+static int cur_initial_char = 0;
+
+static ShipEntity player;
+static AsteroidEntity asteroids[MAX_ASTEROIDS];
+static BulletEntity bullets[MAX_BULLETS];
+static BulletEntity ufo_bullets[MAX_UFO_BULLETS];
+static UfoEntity ufo;
+static Particle particles[MAX_PARTICLES];
+static OrbEntity orbs[MAX_ORBS];
+static float fire_cooldown_timer = 0.0f;
+static int is_thrusting = 0;
+static PlayerUpgrades player_upgrades;
+static MineEntity mines[MAX_MINES];
+static PowerupEntity powerups[MAX_POWERUPS];
+static RiftEntity rift;
+static RiftEntity player_rift;
+static ShockwaveEntity shockwaves[4];
+static UpgradeType upgrade_options[3];
+static int selected_option = 0;
+static float screen_shake_timer = 0.0f;
+static float screen_shake_intensity = 0.0f;
+
+static int menu_selection = 0; // 0: Start, 1: High Scores, 2: Settings
+static int settings_volume = 100;
+static int settings_fullscreen = 0;
+static int settings_glow = 3; // 0=OFF, 1=LOW, 2=MED, 3=HIGH, 4=MAX
+static float god_mode_msg_timer = 0.0f;
+static int is_attract_ai = 0;
+static float idle_timer = 0.0f;
+#define ATTRACT_DELAY 10.0f
+
+static int score = 0;
+static int lives = 3;
+static int level = 1;
+static int total_asteroids_destroyed = 0;
+
+// Combo system
+static int combo_count = 0;
+static float combo_timer = 0.0f;
+#define COMBO_WINDOW 1.8f
+
+// Score pop floaters
+typedef struct { float x, y, vy; int value; float life; int active; } ScoreFloat;
+#define MAX_SCORE_FLOATS 24
+static ScoreFloat score_floats[MAX_SCORE_FLOATS];
+
+// Wave clear bonus
+static float wave_clear_msg_timer = 0.0f;
+static int wave_clear_bonus = 0;
+
+// XP bar flash
+static float xp_flash_timer = 0.0f;
+
+// Edge flash – warn player they're near wrapping
+static float edge_flash_timer = 0.0f;
+
+// Near-miss adrenaline XP
+static float near_miss_cooldown = 0.0f;
+
+static int player_level = 1;
+static int player_xp = 0;
+static int xp_threshold = 100;
+
+static const char* upgrade_names[] = {
+    "TRIPLE SHOT", "BOUNCY BULLETS", "SHIELD GENERATOR", "RAPID FIRE", "PIERCING ROUNDS", "ENGINE OVERCLOCK",
+    "SIZE DOWN", "HOMING SHOTS", "GHOST SIGHT", "VOID ROUNDS", "TIME WARP", "ORB MAGNET", "OVERCHARGE",
+    "MIRROR IMAGE", "REAR GUN", "ORBITAL MINE", "CRIT CHANCE", "HEALTH BOOST", "THRUST TRAIL", "SPLIT SHOT",
+    "VORTEX GRENADE", "PHASE SHIFT", "AUTO TURRET", "NOVA EXPLOSION", "XP BOOST", "ARMOR PLATE",
+    "THERMAL HULL", "SINGULARITY DISPLACER", "SINGULARITY WHIP", "RESONANCE CASCADE"
+};
+
+static const char* difficulty_names[] = {
+    "EASY", "NORMAL", "HARD", "ACE"
+};
+
+static const char* upgrade_descs[] = {
+    "Fire 3 bullets in a spread", "Bullets bounce off screen edges", "One-time shield per life", "30% faster fire rate",
+    "Bullets pass through targets", "20% faster movement", "Reduces ship size", "Bullets track targets",
+    "See enemies through the void", "Bullets deal extra corruption", "Slow down time temporarily", "Attract XP orbs",
+    "Extra damage when at full health", "Create a decoy ship", "Fire from the rear of the ship", "Mines orbit your ship",
+    "Chance for double damage", "Gain an extra life", "Engine leaves damaging trail", "Bullets split on impact",
+    "Grenade that pulls enemies", "Briefly phase through damage", "Automated defense turret", "Explosion on ship hit",
+    "Gain 50% more XP", "Reduced damage from collisions",
+    "Ram asteroids for massive damage", "Double tap thrust to warp", "Engine trail damages enemies", "Bullets cause shockwaves"
+};
+
+
+static float level_start_timer = 2.0f;
+static float ufo_spawn_timer = 15.0f;
+static float beat_timer = 1.0f;
+static int cur_beat = 0;
+
+static float thrust_timer = 0.0f;
+
+// Preset Ship Lines
+static Line ship_lines[] = {
+    {{0.0f, -12.0f}, {-8.0f, 10.0f}},
+    {{-8.0f, 10.0f}, {-3.0f, 6.0f}},
+    {{-3.0f, 6.0f}, {3.0f, 6.0f}},
+    {{3.0f, 6.0f}, {8.0f, 10.0f}},
+    {{8.0f, 10.0f}, {0.0f, -12.0f}}
+};
+
+
+
+
+// Preset UFO Lines
+static Line ufo_lines[] = {
+    {{-16.0f, 0.0f}, {16.0f, 0.0f}},
+    {{-16.0f, 0.0f}, {-8.0f, 5.0f}},
+    {{-8.0f, 5.0f}, {8.0f, 5.0f}},
+    {{8.0f, 5.0f}, {16.0f, 0.0f}},
+    {{-16.0f, 0.0f}, {-8.0f, -5.0f}},
+    {{-8.0f, -5.0f}, {8.0f, -5.0f}},
+    {{8.0f, -5.0f}, {16.0f, 0.0f}},
+    {{-8.0f, -5.0f}, {-4.0f, -10.0f}},
+    {{-4.0f, -10.0f}, {4.0f, -10.0f}},
+    {{4.0f, -10.0f}, {8.0f, -6.0f}}
+};
+
+static Line kamikaze_lines[] = {
+    {{12.0f, 0.0f}, {-8.0f, -8.0f}},
+    {{-8.0f, -8.0f}, {-4.0f, 0.0f}},
+    {{-4.0f, 0.0f}, {-8.0f, 8.0f}},
+    {{-8.0f, 8.0f}, {12.0f, 0.0f}}
+};
+
+static Line bomber_lines[] = {
+    {{-20.0f, 0.0f}, {20.0f, 0.0f}},
+    {{-20.0f, 0.0f}, {-10.0f, 7.0f}},
+    {{-10.0f, 7.0f}, {10.0f, 7.0f}},
+    {{10.0f, 7.0f}, {20.0f, 0.0f}},
+    {{-20.0f, 0.0f}, {-12.0f, -6.0f}},
+    {{-12.0f, -6.0f}, {12.0f, -6.0f}},
+    {{12.0f, -6.0f}, {20.0f, 0.0f}},
+    {{-12.0f, -6.0f}, {-6.0f, -12.0f}},
+    {{-6.0f, -12.0f}, {6.0f, -12.0f}},
+    {{6.0f, -12.0f}, {12.0f, -6.0f}}
+};
+
+// Helpers
+typedef struct {
+    int wrapped;
+    Vec2 entry_pos;
+    Vec2 exit_pos;
+} WrapEvent;
+
+static WrapEvent wrap_position_ext(Vec2 *pos, float padding) {
+    WrapEvent ev = {0, *pos, *pos};
+    if (pos->x < -padding) { pos->x = SCREEN_WIDTH + padding; ev.wrapped = 1; }
+    if (pos->x > SCREEN_WIDTH + padding) { pos->x = -padding; ev.wrapped = 1; }
+    if (pos->y < -padding) { pos->y = SCREEN_HEIGHT + padding; ev.wrapped = 1; }
+    if (pos->y > SCREEN_HEIGHT + padding) { pos->y = -padding; ev.wrapped = 1; }
+    ev.exit_pos = *pos;
+    return ev;
+}
+
+static Vec2 calculate_external_forces(Vec2 pos) {
+    Vec2 force = {0.0f, 0.0f};
+    
+    if (rift.active) {
+        float dx = rift.pos.x - pos.x;
+        float dy = rift.pos.y - pos.y;
+        float dist_sq = dx*dx + dy*dy;
+        if (dist_sq > 1.0f && dist_sq < 800.0f * 800.0f) {
+            float dist = sqrtf(dist_sq);
+            float pull_str = 200000.0f / dist_sq;
+            if (pull_str > 400.0f) pull_str = 400.0f;
+            force.x += (dx / dist) * pull_str;
+            force.y += (dy / dist) * pull_str;
+        }
+    }
+    
+    if (player_rift.active) {
+        float dx = player_rift.pos.x - pos.x;
+        float dy = player_rift.pos.y - pos.y;
+        float dist_sq = dx*dx + dy*dy;
+        if (dist_sq > 1.0f && dist_sq < 600.0f * 600.0f) {
+            float dist = sqrtf(dist_sq);
+            float pull_str = 300000.0f / dist_sq;
+            if (pull_str > 500.0f) pull_str = 500.0f;
+            force.x += (dx / dist) * pull_str;
+            force.y += (dy / dist) * pull_str;
+        }
+    }
+    
+    if (ufo.active && ufo.size == 5) {
+        float dx = ufo.pos.x - pos.x;
+        float dy = ufo.pos.y - pos.y;
+        float dist_sq = dx*dx + dy*dy;
+        if (dist_sq > 1.0f && dist_sq < 1000.0f * 1000.0f) {
+            float dist = sqrtf(dist_sq);
+            float pull_str = 150000.0f / dist_sq;
+            if (pull_str > 250.0f) pull_str = 250.0f;
+            force.x += (dx / dist) * pull_str;
+            force.y += (dy / dist) * pull_str;
+        }
+    }
+    
+    return force;
+}
+
+static WrapEvent update_physics(Vec2 *pos, Vec2 *vel, float delta_time, float padding, float friction) {
+    Vec2 ext_f = calculate_external_forces(*pos);
+    vel->x += ext_f.x * delta_time;
+    vel->y += ext_f.y * delta_time;
+    
+    if (friction < 1.0f) {
+        vel->x *= powf(friction, delta_time * 60.0f);
+        vel->y *= powf(friction, delta_time * 60.0f);
+    }
+    
+    pos->x += vel->x * delta_time;
+    pos->y += vel->y * delta_time;
+    
+    return wrap_position_ext(pos, padding);
+}
+
+// Forward declarations
+static void spawn_particles(Vec2 pos, int count, SDL_Color color);
+static void spawn_asteroid(Vec2 pos, int size);
+static void spawn_orb(Vec2 pos, int value);
+
+// --- Component Hooks ---
+static void on_weapon_fire(Vec2 pos, Vec2 vel) {
+    // Resonance Cascade could hook here or in bullet collision
+}
+
+// Return 1 to cancel default collision logic
+static int on_collision(int is_player_asteroid, int asteroid_idx) {
+    if (is_player_asteroid && player_upgrades.thermal_hull) {
+        float speed_sq = player.vel.x * player.vel.x + player.vel.y * player.vel.y;
+        if (speed_sq > 120.0f * 120.0f) {
+            asteroids[asteroid_idx].active = 0;
+            int next_size = asteroids[asteroid_idx].size - 1;
+            spawn_particles(asteroids[asteroid_idx].pos, 25, (SDL_Color){255, 100, 50, 255});
+            if (next_size >= 1) {
+                spawn_asteroid(asteroids[asteroid_idx].pos, next_size);
+                spawn_asteroid(asteroids[asteroid_idx].pos, next_size);
+            }
+            int orb_val = (asteroids[asteroid_idx].size == 3) ? 20 : ((asteroids[asteroid_idx].size == 2) ? 10 : 4);
+            spawn_orb(asteroids[asteroid_idx].pos, orb_val);
+            score += 200;
+            audio_play(SFX_EXPLOSION_LG);
+            
+            player.vel.x *= -0.5f;
+            player.vel.y *= -0.5f;
+            player.invuln_timer = 0.5f;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void on_thrust(Vec2 pos, Vec2 vel) {
+    if (player_upgrades.singularity_whip) {
+        // Handled via the trail system doing damage in game_update
+    }
+}
+
+static void on_screen_wrap(WrapEvent event) {
+    if (player_upgrades.singularity_displacer) {
+        player_rift.active = 1;
+        player_rift.pos = event.entry_pos;
+        player_rift.radius = 20.0f;
+        player_rift.pulse_timer = 0.0f;
+        player_rift.spawn_timer = 3.0f; // Lasts 3 seconds
+    }
+}
+
+static int check_collision(Vec2 p1, float r1, Vec2 p2, float r2) {
+    float dx = p1.x - p2.x;
+    float dy = p1.y - p2.y;
+    float dist_sq = dx*dx + dy*dy;
+    float sum_r = r1 + r2;
+    return dist_sq < (sum_r * sum_r);
+}
+
+static void load_high_scores() {
+    FILE *f = fopen("highscores.dat", "rb");
+    if (f) {
+        fread(high_scores, sizeof(HighScore), 5, f);
+        fclose(f);
+    } else {
+        // Default high scores
+        strcpy(high_scores[0].initials, "AST"); high_scores[0].score = 10000;
+        strcpy(high_scores[1].initials, "DIR"); high_scores[1].score = 8000;
+        strcpy(high_scores[2].initials, "VEC"); high_scores[2].score = 6000;
+        strcpy(high_scores[3].initials, "PIL"); high_scores[3].score = 4000;
+        strcpy(high_scores[4].initials, "FLY"); high_scores[4].score = 2000;
+    }
+}
+
+static void save_high_scores() {
+    FILE *f = fopen("highscores.dat", "wb");
+    if (f) {
+        fwrite(high_scores, sizeof(HighScore), 5, f);
+        fclose(f);
+    }
+}
+
+static void save_game() {
+    FILE *f = fopen("savegame.dat", "wb");
+    if (!f) return;
+
+    fwrite(&score, sizeof(int), 1, f);
+    fwrite(&lives, sizeof(int), 1, f);
+    fwrite(&level, sizeof(int), 1, f);
+    fwrite(&player_level, sizeof(int), 1, f);
+    fwrite(&player_xp, sizeof(int), 1, f);
+    fwrite(&xp_threshold, sizeof(int), 1, f);
+    fwrite(&player_upgrades, sizeof(PlayerUpgrades), 1, f);
+    fwrite(&player.pos, sizeof(Vec2), 1, f);
+    fwrite(&difficulty, sizeof(Difficulty), 1, f);
+
+    fclose(f);
+}
+
+static void load_game() {
+    FILE *f = fopen("savegame.dat", "rb");
+    if (!f) return;
+
+    fread(&score, sizeof(int), 1, f);
+    fread(&lives, sizeof(int), 1, f);
+    fread(&level, sizeof(int), 1, f);
+    fread(&player_level, sizeof(int), 1, f);
+    fread(&player_xp, sizeof(int), 1, f);
+    fread(&xp_threshold, sizeof(int), 1, f);
+    fread(&player_upgrades, sizeof(PlayerUpgrades), 1, f);
+    fread(&player.pos, sizeof(Vec2), 1, f);
+    fread(&difficulty, sizeof(Difficulty), 1, f);
+
+    fclose(f);
+    
+    player.active = 1;
+    game_state = STATE_PLAYING;
+}
+
+static void spawn_particles(Vec2 pos, int count, SDL_Color color) {
+    int spawned = 0;
+    for (int i = 0; i < MAX_PARTICLES && spawned < count; i++) {
+        if (particles[i].life <= 0.0f) {
+            particles[i].pos = pos;
+            float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+            float speed = 50.0f + 100.0f * ((float)rand() / RAND_MAX);
+            particles[i].vel.x = cosf(angle) * speed;
+            particles[i].vel.y = sinf(angle) * speed;
+            particles[i].angle = angle;
+            particles[i].rot_speed = -5.0f + 10.0f * ((float)rand() / RAND_MAX);
+            particles[i].scale = 2.0f + 5.0f * ((float)rand() / RAND_MAX);
+            particles[i].max_life = 0.5f + 0.8f * ((float)rand() / RAND_MAX);
+            particles[i].life = particles[i].max_life;
+            particles[i].color = color;
+            spawned++;
+        }
+    }
+}
+
+static void init_asteroid_shape(AsteroidEntity *ast, int size) {
+    ast->size = size;
+    ast->radius = (size == 3) ? 35.0f : ((size == 2) ? 18.0f : 9.0f);
+    
+    int num_points = 8 + rand() % 5; // 8 to 12 vertices
+    ast->line_count = num_points;
+    
+    Vec2 points[16];
+    for (int i = 0; i < num_points; i++) {
+        float angle = i * 2.0f * (float)M_PI / num_points;
+        float r = ast->radius * (0.8f + 0.4f * ((float)rand() / RAND_MAX));
+        points[i].x = r * cosf(angle);
+        points[i].y = r * sinf(angle);
+    }
+    
+    for (int i = 0; i < num_points; i++) {
+        ast->lines[i].p1 = points[i];
+        ast->lines[i].p2 = points[(i + 1) % num_points];
+    }
+}
+
+static void spawn_asteroid(Vec2 pos, int size) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!asteroids[i].active) {
+            asteroids[i].active = 1;
+            asteroids[i].pos = pos;
+
+            float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+            float speed_scale = 1.0f + (difficulty * 0.3f);
+            float speed = (30.0f + 50.0f * (4 - size) + 10.0f * level) * speed_scale;
+            asteroids[i].vel.x = cosf(angle) * speed;
+            asteroids[i].vel.y = sinf(angle) * speed;
+            asteroids[i].angle = angle;
+            asteroids[i].rot_speed = (-1.5f + 3.0f * ((float)rand() / RAND_MAX)) * speed_scale;
+            init_asteroid_shape(&asteroids[i], size);
+            asteroids[i].has_shield = (level >= 3 && rand() % 100 < (15 + difficulty * 10));
+            break;
+        }
+    }
+}
+static void reset_player() {
+    player.active = 1;
+    player.pos = (Vec2){SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f};
+    player.vel = (Vec2){0.0f, 0.0f};
+    player.angle = 0.0f;
+    player.invuln_timer = 2.0f; // 2 seconds invulnerability
+}
+
+static void spawn_ufo() {
+    ufo.active = 1;
+    
+    // Choose type based on level
+    int r = rand() % 100;
+    if (level >= 4 && r < 20) {
+        ufo.size = 5; // Eye of the Void
+        ufo.radius = 24.0f;
+    } else if (level >= 3 && r < 40) {
+        ufo.size = 4; // Bomber
+        ufo.radius = 20.0f;
+    } else if (level >= 2 && r < 60) {
+        ufo.size = 3; // Kamikaze
+        ufo.radius = 12.0f;
+    } else {
+        ufo.size = (rand() % 100 < 40 + level * 5) ? 1 : 2; // 2 = Large, 1 = Small
+        ufo.radius = (ufo.size == 2) ? 16.0f : 8.0f;
+    }
+    
+    // Choose side to spawn
+    if (rand() % 2 == 0) {
+        ufo.pos.x = -ufo.radius;
+        ufo.vel.x = 100.0f + 25.0f * level;
+    } else {
+        ufo.pos.x = SCREEN_WIDTH + ufo.radius;
+        ufo.vel.x = -(100.0f + 25.0f * level);
+    }
+    
+    // Speed adjustments
+    if (ufo.size == 3) {
+        ufo.vel.x *= 1.4f; // Kamikaze is fast
+    } else if (ufo.size == 4) {
+        ufo.vel.x *= 0.6f; // Bomber is heavy and slow
+    }
+    
+    ufo.pos.y = 80.0f + ((float)rand() / RAND_MAX) * (SCREEN_HEIGHT - 160.0f);
+    if (ufo.size == 4) {
+        ufo.pos.y = (rand() % 2 == 0) ? 50.0f : SCREEN_HEIGHT - 50.0f;
+        ufo.target_y = ufo.pos.y;
+    } else {
+        ufo.target_y = ufo.pos.y;
+    }
+    ufo.vel.y = 0.0f;
+    ufo.fire_timer = 1.0f;
+    ufo.change_dir_timer = 1.0f;
+    ufo.scream_timer = 2.0f;
+    
+    // Setup model lines
+    if (ufo.size == 3) {
+        ufo.line_count = sizeof(kamikaze_lines) / sizeof(Line);
+        for (int i = 0; i < ufo.line_count; i++) {
+            ufo.lines[i] = kamikaze_lines[i];
+        }
+    } else if (ufo.size == 4) {
+        ufo.line_count = sizeof(bomber_lines) / sizeof(Line);
+        for (int i = 0; i < ufo.line_count; i++) {
+            ufo.lines[i] = bomber_lines[i];
+        }
+    } else if (ufo.size == 5) {
+        ufo.line_count = 0; // custom procedural rendering
+    } else {
+        ufo.line_count = sizeof(ufo_lines) / sizeof(Line);
+        for (int i = 0; i < ufo.line_count; i++) {
+            ufo.lines[i] = ufo_lines[i];
+        }
+    }
+    
+    audio_play(SFX_UFO_LOOP);
+}
+
+static void trigger_hyperspace() {
+    if (!player.active) return;
+    
+    spawn_particles(player.pos, 10, (SDL_Color){150, 180, 255, 255});
+    audio_play(SFX_EXPLOSION_SM);
+    
+    // Instant boom chance (classic 1.5% chance)
+    if (((float)rand() / RAND_MAX) < 0.015f) {
+        player.active = 0;
+        audio_play(SFX_EXPLOSION_LG);
+        spawn_particles(player.pos, 30, (SDL_Color){255, 100, 100, 255});
+        lives--;
+        if (lives <= 0) {
+            game_state = STATE_GAMEOVER;
+            audio_stop(SFX_THRUST);
+            audio_stop(SFX_UFO_LOOP);
+        }
+        return;
+    }
+    
+    player.pos.x = ((float)rand() / RAND_MAX) * SCREEN_WIDTH;
+    player.pos.y = ((float)rand() / RAND_MAX) * SCREEN_HEIGHT;
+    player.vel = (Vec2){0.0f, 0.0f};
+    player.invuln_timer = 0.5f;
+}
+
+static void spawn_asteroid(Vec2 pos, int size);
+
+static void spawn_orb(Vec2 pos, int value) {
+    for (int i = 0; i < MAX_ORBS; i++) {
+        if (!orbs[i].active) {
+            orbs[i].active = 1;
+            orbs[i].pos = pos;
+            float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+            float speed = 20.0f + 30.0f * ((float)rand() / RAND_MAX);
+            orbs[i].vel.x = cosf(angle) * speed;
+            orbs[i].vel.y = sinf(angle) * speed;
+            orbs[i].value = value;
+            orbs[i].life = 10.0f;
+            break;
+        }
+    }
+}
+
+static void spawn_upgrade_options() {
+    UpgradeType all_upgrades[30];
+    for (int i = 0; i < 30; i++) all_upgrades[i] = (UpgradeType)i;
+    int total_available = 30;
+
+    // Shuffle and pick 3
+    for (int i = 0; i < 3; i++) {
+        int idx = i + rand() % (total_available - i);
+        UpgradeType temp = all_upgrades[i];
+        all_upgrades[i] = all_upgrades[idx];
+        all_upgrades[idx] = temp;
+        upgrade_options[i] = all_upgrades[i];
+    }
+    selected_option = 0;
+}
+
+static void apply_upgrade(UpgradeType type) {
+    switch (type) {
+        case UPGRADE_TRIPLE_SHOT: player_upgrades.triple_shot = 1; break;
+        case UPGRADE_BOUNCE: player_upgrades.max_bounces += 1; break;
+        case UPGRADE_SHIELD: player_upgrades.shield_active = 1; break;
+        case UPGRADE_RAPID_FIRE: player_upgrades.fire_cooldown_mult *= 0.7f; break;
+        case UPGRADE_PIERCING: player_upgrades.piercing = 1; break;
+        case UPGRADE_SPEED: player_upgrades.speed_mult *= 1.2f; break;
+        case UPGRADE_SIZE_DOWN: player_upgrades.size_mult *= 0.8f; player.radius *= 0.8f; break;
+        case UPGRADE_HOMING: player_upgrades.homing = 1; break;
+        case UPGRADE_ORB_MAGNET: player_upgrades.magnet_radius += 50.0f; break;
+        case UPGRADE_REAR_GUN: player_upgrades.rear_gun = 1; break;
+        case UPGRADE_SPLIT_SHOT: player_upgrades.split_shot = 1; break;
+        case UPGRADE_XP_BOOST: player_upgrades.xp_mult += 0.5f; break;
+        case UPGRADE_HEALTH_BOOST: lives++; break;
+        case UPGRADE_MIRROR_IMAGE: player_upgrades.mirror_image = 1; break;
+        case UPGRADE_PHASE_SHIFT: player_upgrades.phase_shift = 1; break;
+        case UPGRADE_THERMAL_HULL: player_upgrades.thermal_hull = 1; break;
+        case UPGRADE_SINGULARITY_DISPLACER: player_upgrades.singularity_displacer = 1; break;
+        case UPGRADE_SINGULARITY_WHIP: player_upgrades.singularity_whip = 1; break;
+        case UPGRADE_RESONANCE_CASCADE: player_upgrades.resonance_cascade = 1; break;
+        // Remaining 10+ buffs could be implemented with more complex logic, 
+        // for now we'll ensure the player_upgrades struct covers the main ones requested.
+        default: break; 
+    }
+}
+
+static void start_next_level() {
+    level++;
+    int count = 4 + level + (difficulty * 2); 
+    if (count > MAX_ASTEROIDS - 4) count = MAX_ASTEROIDS - 4;
+
+    // Deactivate all bullets & particles
+    for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = 0;
+    for (int i = 0; i < MAX_UFO_BULLETS; i++) ufo_bullets[i].active = 0;
+    for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0.0f;
+
+    // Deactivate mines and powerups
+    for (int i = 0; i < MAX_MINES; i++) mines[i].active = 0;
+    for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = 0;
+
+    ufo.active = 0;
+    audio_stop(SFX_UFO_LOOP);
+
+    // Spawn new asteroids at distance from center
+    for (int i = 0; i < count; i++) {
+        Vec2 pos;
+        do {
+            pos.x = ((float)rand() / RAND_MAX) * SCREEN_WIDTH;
+            pos.y = ((float)rand() / RAND_MAX) * SCREEN_HEIGHT;
+        } while (check_collision(pos, 60.0f, (Vec2){SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f}, 60.0f));
+
+        spawn_asteroid(pos, 3);
+    }
+    // Spawn Anomalous Void Rift in level >= 4
+    if (level >= 4) {
+        rift.active = 1;
+        do {
+            rift.pos.x = 100.0f + ((float)rand() / RAND_MAX) * (SCREEN_WIDTH - 200.0f);
+            rift.pos.y = 100.0f + ((float)rand() / RAND_MAX) * (SCREEN_HEIGHT - 200.0f);
+        } while (check_collision(rift.pos, 150.0f, (Vec2){SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f}, 60.0f));
+        rift.radius = 35.0f;
+        rift.angle1 = 0.0f;
+        rift.angle2 = 0.0f;
+        rift.pulse_timer = 0.0f;
+        rift.spawn_timer = 5.0f;
+    } else {
+        rift.active = 0;
+    }
+    
+    level_start_timer = 1.5f;
+    ufo_spawn_timer = 15.0f + ((float)rand() / RAND_MAX) * 15.0f;
+}
+
+static void start_new_game() {
+    score = 0;
+    lives = 3;
+    level = 0; // Will become 1 when we call start_next_level
+    total_asteroids_destroyed = 0;
+    player_level = 1;
+    player_xp = 0;
+    xp_threshold = 100;
+
+    // Clear all
+    for (int i = 0; i < MAX_ASTEROIDS; i++) asteroids[i].active = 0;
+    for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = 0;
+    for (int i = 0; i < MAX_UFO_BULLETS; i++) ufo_bullets[i].active = 0;
+    for (int i = 0; i < MAX_PARTICLES; i++) particles[i].life = 0.0f;
+    for (int i = 0; i < MAX_ORBS; i++) orbs[i].active = 0;
+    for (int i = 0; i < MAX_SCORE_FLOATS; i++) score_floats[i].active = 0;
+    combo_count = 0; combo_timer = 0.0f;
+    wave_clear_msg_timer = 0.0f;
+    ufo.active = 0;
+
+    // Reset player upgrades
+    player_upgrades.triple_shot = 0;
+    player_upgrades.max_bounces = 0;
+    player_upgrades.fire_cooldown_mult = 1.0f;
+    player_upgrades.bullet_speed_mult = 1.0f;
+    player_upgrades.shield_active = 0;
+    player_upgrades.speed_mult = 1.0f;
+    player_upgrades.piercing = 0;
+    player_upgrades.size_mult = 1.0f;
+    player_upgrades.homing = 0;
+    player_upgrades.magnet_radius = 60.0f;
+    player_upgrades.rear_gun = 0;
+    player_upgrades.split_shot = 0;
+    player_upgrades.xp_mult = 1.0f;
+    player_upgrades.mirror_image = 0;
+    player_upgrades.phase_shift = 0;
+
+    // Clear mines, powerups, rift, screen shake
+    for (int i = 0; i < MAX_MINES; i++) mines[i].active = 0;
+    for (int i = 0; i < MAX_POWERUPS; i++) powerups[i].active = 0;
+    rift.active = 0;
+    screen_shake_timer = 0.0f;
+    screen_shake_intensity = 0.0f;
+    vg_set_shake(0, 0);
+
+    audio_stop(SFX_THRUST);
+    audio_stop(SFX_UFO_LOOP);
+
+    reset_player();
+    start_next_level();
+    game_state = STATE_PLAYING;
+}
+
+void game_init() {
+    load_high_scores();
+    vf_init();
+
+    // Setup player static shape
+    player.line_count = sizeof(ship_lines) / sizeof(Line);
+    for (int i = 0; i < player.line_count; i++) {
+        player.lines[i] = ship_lines[i];
+    }
+    player.radius = 8.0f;
+    player.active = 0;
+    player.trail_idx = 0;
+    for (int i = 0; i < MAX_TRAIL_POINTS; i++) player.trail[i].alpha = 0.0f;
+}
+
+void game_set_paused(int paused) {
+    if (game_state == STATE_PLAYING && paused) {
+        game_state = STATE_PAUSED;
+        audio_stop(SFX_THRUST);
+    } else if (game_state == STATE_PAUSED && !paused) {
+        game_state = STATE_PLAYING;
+    }
+}
+
+void game_handle_input(SDL_Event *event) {
+    idle_timer = 0.0f; // Reset idle timer on any input
+    if (game_state == STATE_ATTRACT_INSTRUCTIONS || game_state == STATE_ATTRACT_GAMEPLAY) {
+        game_state = STATE_TITLE;
+        return;
+    }
+
+    if (event->type == SDL_KEYDOWN) {
+        if (game_state == STATE_ATTRACT_GAMEPLAY) {
+            game_state = STATE_TITLE;
+            audio_stop(SFX_THRUST);
+            audio_stop(SFX_UFO_LOOP);
+            return;
+        }
+
+        // Handle Cheat Code (Ctrl+F8)
+        if (event->key.keysym.sym == SDLK_F8 && (SDL_GetModState() & KMOD_CTRL)) {
+            god_mode = !god_mode;
+            god_mode_msg_timer = 2.0f;
+            audio_play(SFX_EXPLOSION_LG); // feedback
+        }
+
+        if (game_state == STATE_TITLE) {
+            if (event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w) menu_selection = (menu_selection + 2) % 3;
+            if (event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) menu_selection = (menu_selection + 1) % 3;
+            if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
+                if (menu_selection == 0) start_new_game();
+                else if (menu_selection == 1) game_state = STATE_HIGHSCORES;
+                else if (menu_selection == 2) game_state = STATE_SETTINGS;
+            }
+        } else if (game_state == STATE_PLAYING) {
+            if (event->key.keysym.sym == SDLK_ESCAPE) {
+                game_set_paused(1);
+            } else if ((event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_DOWN) && player.active) {
+                trigger_hyperspace();
+            }
+        } else if (game_state == STATE_PAUSED) {
+            if (event->key.keysym.sym == SDLK_ESCAPE || event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
+                game_set_paused(0);
+            } else if (event->key.keysym.sym == SDLK_s) {
+                save_game();
+            } else if (event->key.keysym.sym == SDLK_l) {
+                load_game();
+            } else if (event->key.keysym.sym == SDLK_q) {
+                game_state = STATE_TITLE;
+                audio_stop(SFX_THRUST);
+                audio_stop(SFX_UFO_LOOP);
+            }
+        } else if (game_state == STATE_SETTINGS) {
+            if (event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w) menu_selection = (menu_selection + 3) % 4;
+            if (event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) menu_selection = (menu_selection + 1) % 4;
+            
+            if (menu_selection == 0) { // Volume
+                if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) {
+                    if (settings_volume > 0) { settings_volume -= 10; audio_set_volume(settings_volume); }
+                } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
+                    if (settings_volume < 100) { settings_volume += 10; audio_set_volume(settings_volume); }
+                }
+            } else if (menu_selection == 1) { // Resolution (Fullscreen)
+                if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
+                    settings_fullscreen = !settings_fullscreen;
+                    SDL_SetWindowFullscreen(g_window, settings_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                }
+            } else if (menu_selection == 2) { // Difficulty
+                if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) {
+                    difficulty = (difficulty + 3) % 4;
+                } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
+                    difficulty = (difficulty + 1) % 4;
+                }
+            } else if (menu_selection == 3) { // Phosphor Glow
+                if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) {
+                    settings_glow = (settings_glow + 4) % 5;
+                } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
+                    settings_glow = (settings_glow + 1) % 5;
+                }
+            }
+
+            if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_ESCAPE) {
+                game_state = STATE_TITLE;
+                menu_selection = 0;
+            }
+        } else if (game_state == STATE_GAMEOVER) {
+            if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
+                // Check if high score achieved
+                int is_hs = 0;
+                for (int i = 0; i < 5; i++) {
+                    if (score > high_scores[i].score) {
+                        is_hs = 1;
+                        new_high_score_idx = i;
+                        break;
+                    }
+                }
+                if (is_hs) {
+                    game_state = STATE_NEW_HIGHSCORE;
+                    strcpy(temp_initials, "A  ");
+                    cur_initial_char = 0;
+                } else {
+                    game_state = STATE_HIGHSCORES; // Show scores anyway
+                }
+            }
+        } else if (game_state == STATE_HIGHSCORES) {
+            if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_ESCAPE) {
+                game_state = STATE_TITLE;
+            }
+        } else if (game_state == STATE_NEW_HIGHSCORE) {
+            if (event->key.keysym.sym == SDLK_LEFT) {
+                if (temp_initials[cur_initial_char] == ' ') {
+                    temp_initials[cur_initial_char] = 'Z';
+                } else if (temp_initials[cur_initial_char] == 'A') {
+                    temp_initials[cur_initial_char] = ' ';
+                } else {
+                    temp_initials[cur_initial_char]--;
+                }
+            } else if (event->key.keysym.sym == SDLK_RIGHT) {
+                if (temp_initials[cur_initial_char] == ' ') {
+                    temp_initials[cur_initial_char] = 'A';
+                } else if (temp_initials[cur_initial_char] == 'Z') {
+                    temp_initials[cur_initial_char] = ' ';
+                } else {
+                    temp_initials[cur_initial_char]++;
+                }
+            } else if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
+                if (cur_initial_char < 2) {
+                    cur_initial_char++;
+                    temp_initials[cur_initial_char] = 'A';
+                } else {
+                    // Shift lower scores down
+                    for (int i = 4; i > new_high_score_idx; i--) {
+                        high_scores[i] = high_scores[i - 1];
+                    }
+                    // Insert new high score
+                    strcpy(high_scores[new_high_score_idx].initials, temp_initials);
+                    high_scores[new_high_score_idx].score = score;
+                    save_high_scores();
+
+                    game_state = STATE_HIGHSCORES;
+                }
+            }
+        } else if (game_state == STATE_UPGRADE_SELECT) {
+            if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w) {
+                selected_option = (selected_option + 2) % 3;
+            } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d || event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) {
+                selected_option = (selected_option + 1) % 3;
+            } else if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
+                apply_upgrade(upgrade_options[selected_option]);
+                game_state = STATE_PLAYING;
+            }
+        }
+    }
+
+    if (event->type == SDL_MOUSEBUTTONDOWN && game_state == STATE_PLAYING && player.active) {
+        if (event->button.button == SDL_BUTTON_MIDDLE) {
+            trigger_hyperspace();
+        }
+    }
+}
+
+
+void game_update(float delta_time) {
+    if (god_mode_msg_timer > 0.0f) {
+        god_mode_msg_timer -= delta_time;
+    }
+
+    if (game_state != STATE_PLAYING && game_state != STATE_ATTRACT_GAMEPLAY) {
+        idle_timer += delta_time;
+        if (idle_timer >= ATTRACT_DELAY) {
+            idle_timer = 0.0f;
+            if (game_state == STATE_TITLE) game_state = STATE_ATTRACT_INSTRUCTIONS;
+            else if (game_state == STATE_ATTRACT_INSTRUCTIONS) game_state = STATE_HIGHSCORES;
+            else if (game_state == STATE_HIGHSCORES) {
+                is_attract_ai = 1;
+                start_new_game();
+                game_state = STATE_ATTRACT_GAMEPLAY;
+            }
+            else game_state = STATE_TITLE;
+        }
+    }
+
+    if (game_state == STATE_UPGRADE_SELECT && is_attract_ai) {
+        static float ai_upgrade_timer = 0.0f;
+        ai_upgrade_timer += delta_time;
+        if (ai_upgrade_timer >= 1.5f) {
+            ai_upgrade_timer = 0.0f;
+            selected_option = rand() % 3;
+            apply_upgrade(upgrade_options[selected_option]);
+            game_state = STATE_ATTRACT_GAMEPLAY;
+        }
+    }
+
+    // Update combo timer
+    if (combo_timer > 0.0f) {
+        combo_timer -= delta_time;
+        if (combo_timer <= 0.0f) combo_count = 0;
+    }
+
+    // Update near-miss cooldown
+    if (near_miss_cooldown > 0.0f) near_miss_cooldown -= delta_time;
+
+    // Near-miss XP: if a UFO bullet passes very close to player
+    if (player.active && near_miss_cooldown <= 0.0f) {
+        for (int b = 0; b < MAX_UFO_BULLETS; b++) {
+            if (!ufo_bullets[b].active) continue;
+            float dx = ufo_bullets[b].pos.x - player.pos.x;
+            float dy = ufo_bullets[b].pos.y - player.pos.y;
+            float dist_sq = dx*dx + dy*dy;
+            if (dist_sq < 35.0f * 35.0f && dist_sq > player.radius * player.radius) {
+                // Adrenaline bonus – small XP orb spawn
+                spawn_orb(player.pos, 3);
+                near_miss_cooldown = 1.0f;
+                break;
+            }
+        }
+    }
+
+    // Edge flash – detect if player is near wrap boundary at speed
+    if (player.active) {
+        float spd = sqrtf(player.vel.x*player.vel.x + player.vel.y*player.vel.y);
+        if (spd > 120.0f) {
+            float margin = 40.0f;
+            if (player.pos.x < margin || player.pos.x > SCREEN_WIDTH - margin ||
+                player.pos.y < margin || player.pos.y > SCREEN_HEIGHT - margin) {
+                edge_flash_timer = 0.15f;
+            }
+        }
+    }
+    if (edge_flash_timer > 0.0f) edge_flash_timer -= delta_time;
+
+    // Update score floaters
+    for (int i = 0; i < MAX_SCORE_FLOATS; i++) {
+        if (score_floats[i].active) {
+            score_floats[i].y += score_floats[i].vy * delta_time;
+            score_floats[i].life -= delta_time;
+            if (score_floats[i].life <= 0.0f) score_floats[i].active = 0;
+        }
+    }
+
+    // XP bar flash
+    if (xp_flash_timer > 0.0f) xp_flash_timer -= delta_time;
+
+    // Wave clear message timer
+    if (wave_clear_msg_timer > 0.0f) wave_clear_msg_timer -= delta_time;
+
+    if (game_state == STATE_TITLE || game_state == STATE_ATTRACT_INSTRUCTIONS || game_state == STATE_ATTRACT_GAMEPLAY) {
+        // Just rotate menu asteroids
+        static float init_title_ast = 0.0f;
+        if (init_title_ast == 0.0f) {
+            init_title_ast = 1.0f;
+            // Spawn a few background asteroids just to float around the title screen
+            for (int i = 0; i < 4; i++) {
+                Vec2 pos = {((float)rand() / RAND_MAX) * SCREEN_WIDTH, ((float)rand() / RAND_MAX) * SCREEN_HEIGHT};
+                spawn_asteroid(pos, 3);
+            }
+        }
+    }
+
+    // --- Update Particles (always update, even in title/game over) ---
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        if (particles[i].life > 0.0f) {
+            particles[i].life -= delta_time;
+            particles[i].angle += particles[i].rot_speed * delta_time;
+            update_physics(&particles[i].pos, &particles[i].vel, delta_time, 5.0f, 1.0f);
+        }
+    }
+
+    // --- Update Asteroids (always update) ---
+    int active_asteroids_count = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (asteroids[i].active) {
+            active_asteroids_count++;
+            // Record trail before moving
+            asteroids[i].trail_pos[asteroids[i].trail_head] = asteroids[i].pos;
+            asteroids[i].trail_ang[asteroids[i].trail_head] = asteroids[i].angle;
+            asteroids[i].trail_head = (asteroids[i].trail_head + 1) % PHOS_TRAIL_LEN;
+            asteroids[i].angle += asteroids[i].rot_speed * delta_time;
+            update_physics(&asteroids[i].pos, &asteroids[i].vel, delta_time, asteroids[i].radius + 5.0f, 1.0f);
+        }
+    }
+
+    if (game_state != STATE_PLAYING && game_state != STATE_ATTRACT_GAMEPLAY) return;
+
+    // --- Sound Beat System ---
+    if (active_asteroids_count > 0) {
+        // Beat rate based on number of asteroids
+        float speed_mult = (float)active_asteroids_count / (4 + level);
+        if (speed_mult < 0.2f) speed_mult = 0.2f;
+        if (speed_mult > 1.0f) speed_mult = 1.0f;
+        float current_beat_delay = 0.25f + 0.75f * speed_mult;
+        
+        beat_timer -= delta_time;
+        if (beat_timer <= 0.0f) {
+            cur_beat = 1 - cur_beat;
+            audio_play(cur_beat ? SFX_BEAT1 : SFX_BEAT2);
+            beat_timer = current_beat_delay;
+        }
+    }
+
+    // --- Check level complete ---
+    if (active_asteroids_count == 0 && level_start_timer > 0.0f) {
+        level_start_timer -= delta_time;
+        if (level_start_timer <= 0.0f) {
+            // Award wave clear bonus
+            wave_clear_bonus = 500 + level * 100;
+            score += wave_clear_bonus;
+            wave_clear_msg_timer = 2.5f;
+            spawn_upgrade_options();
+            game_state = STATE_UPGRADE_SELECT;
+        }
+    }
+
+    // --- Update Player ---
+    if (player.active) {
+        int thrust_key_down = 0;
+        int fire_key_down = 0;
+        
+        if (game_state == STATE_ATTRACT_GAMEPLAY) {
+            // Very simple AI: find closest asteroid
+            float closest_dist = 9999999.0f;
+            int closest_idx = -1;
+            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                if (asteroids[i].active) {
+                    float dx = asteroids[i].pos.x - player.pos.x;
+                    float dy = asteroids[i].pos.y - player.pos.y;
+                    float dist_sq = dx*dx + dy*dy;
+                    if (dist_sq < closest_dist) {
+                        closest_dist = dist_sq;
+                        closest_idx = i;
+                    }
+                }
+            }
+            if (closest_idx != -1) {
+                float dx = asteroids[closest_idx].pos.x - player.pos.x;
+                float dy = asteroids[closest_idx].pos.y - player.pos.y;
+                float target_angle = atan2f(dy, dx) + (float)M_PI / 2.0f;
+                // Simple snapping
+                player.angle = target_angle;
+                
+                if (closest_dist > 150.0f * 150.0f) {
+                    thrust_key_down = 1;
+                }
+                if (closest_dist < 300.0f * 300.0f) {
+                    fire_key_down = 1;
+                }
+            }
+        } else {
+            const Uint8 *keys = SDL_GetKeyboardState(NULL);
+            if (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A]) {
+                player.angle -= ROTATION_SPEED * delta_time;
+            }
+            if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) {
+                player.angle += ROTATION_SPEED * delta_time;
+            }
+            
+            int mx, my;
+            Uint32 mouse_buttons = SDL_GetMouseState(&mx, &my);
+            
+            static int last_mx = -1, last_my = -1;
+            if (mx != last_mx || my != last_my) {
+                float dx = (float)mx - player.pos.x;
+                float dy = (float)my - player.pos.y;
+                player.angle = atan2f(dy, dx) + (float)M_PI / 2.0f;
+                last_mx = mx;
+                last_my = my;
+            }
+            
+            thrust_key_down = (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W] || (mouse_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)));
+            fire_key_down = (keys[SDL_SCANCODE_SPACE] || (mouse_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)));
+        }
+
+        static Uint32 last_thrust_tap = 0;
+        static int thrust_key_was_down = 0;
+        is_thrusting = thrust_key_down;
+        
+        if (thrust_key_down && !thrust_key_was_down) {
+            Uint32 now = SDL_GetTicks();
+            if (player_upgrades.singularity_displacer && (now - last_thrust_tap) < 300) {
+                WrapEvent warp_ev = {1, player.pos, player.pos};
+                player.pos.x = SCREEN_WIDTH - player.pos.x;
+                player.pos.y = SCREEN_HEIGHT - player.pos.y;
+                warp_ev.exit_pos = player.pos;
+                on_screen_wrap(warp_ev);
+                spawn_particles(warp_ev.entry_pos, 20, (SDL_Color){100, 100, 255, 255});
+                spawn_particles(warp_ev.exit_pos, 20, (SDL_Color){100, 100, 255, 255});
+                audio_play(SFX_EXPLOSION_MD);
+            }
+            last_thrust_tap = now;
+        }
+        thrust_key_was_down = thrust_key_down;
+
+        if (thrust_key_down) {
+            // Apply thrust in direction of nose
+            player.vel.x += sinf(player.angle) * THRUST_FORCE * player_upgrades.speed_mult * delta_time;
+            player.vel.y -= cosf(player.angle) * THRUST_FORCE * player_upgrades.speed_mult * delta_time;
+            is_thrusting = 1;
+            thrust_timer += delta_time;
+            audio_play(SFX_THRUST);
+            on_thrust(player.pos, player.vel);
+        } else {
+            is_thrusting = 0;
+            audio_stop(SFX_THRUST);
+        }
+
+        // Auto-firing logic
+        if (fire_cooldown_timer > 0.0f) {
+            fire_cooldown_timer -= delta_time;
+        }
+
+        // Apply Physics (Friction, External Forces, Velocity, Wrap)
+        WrapEvent player_wrap = update_physics(&player.pos, &player.vel, delta_time, player.radius + 5.0f, FRICTION);
+        if (player_wrap.wrapped) {
+            on_screen_wrap(player_wrap);
+        }
+
+        if (fire_key_down && fire_cooldown_timer <= 0.0f) {
+            int bullets_to_fire = player_upgrades.triple_shot ? 3 : 1;
+            float spread = 0.25f;
+
+            for (int b = 0; b < bullets_to_fire; b++) {
+                // Look for empty bullet slot
+                for (int i = 0; i < MAX_BULLETS; i++) {
+                    if (!bullets[i].active) {
+                        bullets[i].active = 1;
+                        bullets[i].life = BULLET_LIFE;
+                        bullets[i].bounces = 0;
+                        bullets[i].pierces = 0;
+                        
+                        float angle = player.angle;
+                        if (bullets_to_fire == 3) {
+                            angle += (b - 1) * spread;
+                        }
+
+                        // Bullet starts at ship nose
+                        float nose_x = player.pos.x + sinf(angle) * 12.0f;
+                        float nose_y = player.pos.y - cosf(angle) * 12.0f;
+                        bullets[i].pos = (Vec2){nose_x, nose_y};
+                        
+                        // Add velocity
+                        bullets[i].vel.x = sinf(angle) * BULLET_SPEED * player_upgrades.bullet_speed_mult;
+                        bullets[i].vel.y = -cosf(angle) * BULLET_SPEED * player_upgrades.bullet_speed_mult;
+                        
+                        // Inherit some of ship's velocity
+                        bullets[i].vel.x += player.vel.x * 0.3f;
+                        bullets[i].vel.y += player.vel.y * 0.3f;
+                        
+                        bullets[i].color = (SDL_Color){255, 255, 255, 255};
+                        bullets[i].is_homing = 0;
+                        
+                        break;
+                    }
+                }
+            }
+            audio_play(SFX_FIRE);
+            on_weapon_fire(player.pos, player.vel);
+            fire_cooldown_timer = 0.25f * player_upgrades.fire_cooldown_mult;
+        }
+
+
+
+        
+        // God Mode overrides
+        if (god_mode) {
+            lives = 99;
+            player_upgrades.triple_shot = 1;
+            player_upgrades.fire_cooldown_mult = 0.2f;
+            player_upgrades.magnet_radius = 500.0f;
+        }
+
+        // Invuln blink timer
+        if (player.invuln_timer > 0.0f) {
+            player.invuln_timer -= delta_time;
+        }
+    } else {
+        // Wait, if player is dead and we have lives left, spawn them after 1.5 seconds
+        static float spawn_delay = 1.5f;
+        if (lives > 0) {
+            spawn_delay -= delta_time;
+            if (spawn_delay <= 0.0f) {
+                reset_player();
+                spawn_delay = 1.5f;
+            }
+        }
+    }
+
+    // --- Update Orbs ---
+    for (int i = 0; i < MAX_ORBS; i++) {
+        if (orbs[i].active) {
+            // Record trail
+            orbs[i].trail_pos[orbs[i].trail_head] = orbs[i].pos;
+            orbs[i].trail_ang[orbs[i].trail_head] = 0.0f;
+            orbs[i].trail_head = (orbs[i].trail_head + 1) % PHOS_TRAIL_LEN;
+            // Magnet logic
+            if (player.active) {
+                float dx = player.pos.x - orbs[i].pos.x;
+                float dy = player.pos.y - orbs[i].pos.y;
+                float dist_sq = dx * dx + dy * dy;
+                float mag_r = player_upgrades.magnet_radius + 40.0f; // More giving base radius
+                if (dist_sq < mag_r * mag_r) {
+                    float dist = sqrtf(dist_sq);
+                    float pull = (god_mode) ? 1500.0f : 1200.0f;
+                    orbs[i].vel.x *= (1.0f - 5.0f * delta_time);
+                    orbs[i].vel.y *= (1.0f - 5.0f * delta_time);
+                    orbs[i].vel.x += (dx / dist) * pull * delta_time;
+                    orbs[i].vel.y += (dy / dist) * pull * delta_time;
+                }
+            }
+            update_physics(&orbs[i].pos, &orbs[i].vel, delta_time, 5.0f, 1.0f);
+
+            // Collection
+            if (player.active && check_collision(player.pos, player.radius + 5.0f, orbs[i].pos, 6.0f)) {
+                orbs[i].active = 0;
+                int gained = (int)(orbs[i].value * player_upgrades.xp_mult);
+                player_xp += gained;
+                audio_play(SFX_EXPLOSION_SM);
+                if (player_xp >= xp_threshold) {
+                    player_xp -= xp_threshold;
+                    player_level++;
+                    xp_threshold = (int)(xp_threshold * 1.6f);
+                    xp_flash_timer = 0.4f;
+                    spawn_upgrade_options();
+                    game_state = STATE_UPGRADE_SELECT;
+                }
+            }
+        }
+    }
+
+
+    // --- Update Bullets ---
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        if (bullets[i].active) {
+            bullets[i].trail_pos[bullets[i].trail_head] = bullets[i].pos;
+            bullets[i].trail_ang[bullets[i].trail_head] = 0.0f;
+            bullets[i].trail_head = (bullets[i].trail_head + 1) % PHOS_TRAIL_LEN;
+            bullets[i].life -= delta_time;
+            if (bullets[i].life <= 0.0f) {
+                bullets[i].active = 0;
+            } else {
+                Vec2 ext_f = calculate_external_forces(bullets[i].pos);
+                bullets[i].vel.x += ext_f.x * delta_time;
+                bullets[i].vel.y += ext_f.y * delta_time;
+
+                bullets[i].pos.x += bullets[i].vel.x * delta_time;
+                bullets[i].pos.y += bullets[i].vel.y * delta_time;
+
+                // Bouncy bullets logic
+                if (player_upgrades.max_bounces > 0 && bullets[i].bounces < player_upgrades.max_bounces) {
+                    int bounced = 0;
+                    if (bullets[i].pos.x < 0 || bullets[i].pos.x > SCREEN_WIDTH) {
+                        bullets[i].vel.x = -bullets[i].vel.x;
+                        bounced = 1;
+                    }
+                    if (bullets[i].pos.y < 0 || bullets[i].pos.y > SCREEN_HEIGHT) {
+                        bullets[i].vel.y = -bullets[i].vel.y;
+                        bounced = 1;
+                    }
+                    if (bounced) {
+                        bullets[i].bounces++;
+                    }
+                } else {
+                    wrap_position_ext(&bullets[i].pos, 2.0f);
+                }
+            }
+        }
+    }
+
+    // --- Update UFO ---
+    if (ufo.active) {
+        Vec2 ext_f = calculate_external_forces(ufo.pos);
+        ufo.vel.x += ext_f.x * delta_time;
+        ufo.vel.y += ext_f.y * delta_time;
+
+        if (ufo.size == 3 && player.active) {
+            // Vector Stalker (Kamikaze)
+            float dx = player.pos.x - ufo.pos.x;
+            float dy = player.pos.y - ufo.pos.y;
+            float dist = sqrtf(dx*dx + dy*dy);
+            float t = dist / 200.0f;
+            Vec2 p_target = { player.pos.x + player.vel.x * t, player.pos.y + player.vel.y * t };
+            
+            float target_dx = p_target.x - ufo.pos.x;
+            float target_dy = p_target.y - ufo.pos.y;
+            float target_dist = sqrtf(target_dx*target_dx + target_dy*target_dy);
+            if (target_dist > 0.1f) {
+                ufo.vel.x = (target_dx / target_dist) * 200.0f;
+                ufo.vel.y = (target_dy / target_dist) * 200.0f;
+            }
+            ufo.pos.x += ufo.vel.x * delta_time;
+            ufo.pos.y += ufo.vel.y * delta_time;
+            wrap_position_ext(&ufo.pos, ufo.radius);
+        } else if (ufo.size == 4) {
+            // Boundary Weaver (Bomber)
+            ufo.pos.x += ufo.vel.x * delta_time;
+            float dy = ufo.target_y - ufo.pos.y;
+            ufo.pos.y += dy * 2.0f * delta_time;
+            
+            if ((ufo.vel.x > 0.0f && ufo.pos.x > SCREEN_WIDTH + ufo.radius) || 
+                (ufo.vel.x < 0.0f && ufo.pos.x < -ufo.radius)) {
+                ufo.active = 0;
+                audio_stop(SFX_UFO_LOOP);
+                ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
+            }
+        } else if (ufo.size == 5) {
+            // Eye of the Void (Gravitational Harvester)
+            ufo.pos.x += ufo.vel.x * 0.3f * delta_time; 
+            ufo.pos.y += sinf(SDL_GetTicks() / 500.0f) * 20.0f * delta_time; 
+            
+            if ((ufo.vel.x > 0.0f && ufo.pos.x > SCREEN_WIDTH + ufo.radius) || 
+                (ufo.vel.x < 0.0f && ufo.pos.x < -ufo.radius)) {
+                ufo.active = 0;
+                audio_stop(SFX_UFO_LOOP);
+                ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
+            }
+        } else {
+            // Normal UFO (1 or 2)
+            ufo.pos.x += ufo.vel.x * delta_time;
+            ufo.change_dir_timer -= delta_time;
+            if (ufo.change_dir_timer <= 0.0f) {
+                ufo.change_dir_timer = 1.0f + ((float)rand() / RAND_MAX) * 1.5f;
+                ufo.vel.y = (-1.0f + 2.0f * (rand() % 2)) * 60.0f;
+            }
+            ufo.pos.y += ufo.vel.y * delta_time;
+            
+            if (ufo.pos.y < 50.0f) { ufo.pos.y = 50.0f; ufo.vel.y = -ufo.vel.y; }
+            if (ufo.pos.y > SCREEN_HEIGHT - 50.0f) { ufo.pos.y = SCREEN_HEIGHT - 50.0f; ufo.vel.y = -ufo.vel.y; }
+
+            if ((ufo.vel.x > 0.0f && ufo.pos.x > SCREEN_WIDTH + ufo.radius) || 
+                (ufo.vel.x < 0.0f && ufo.pos.x < -ufo.radius)) {
+                ufo.active = 0;
+                audio_stop(SFX_UFO_LOOP);
+                ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
+            }
+        }
+
+        // Firing logic
+        ufo.fire_timer -= delta_time;
+        if (ufo.fire_timer <= 0.0f && player.active) {
+            ufo.fire_timer = (ufo.size == 2) ? 1.5f : 1.0f; // Small UFO fires faster
+            
+            // Look for empty UFO bullet slot
+            for (int i = 0; i < MAX_UFO_BULLETS; i++) {
+                if (!ufo_bullets[i].active) {
+                    ufo_bullets[i].active = 1;
+                    ufo_bullets[i].life = BULLET_LIFE;
+                    ufo_bullets[i].pos = ufo.pos;
+                    
+                    float fire_angle = 0.0f;
+                    if (ufo.size == 2) {
+                        // Large UFO fires in complete random direction
+                        fire_angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+                    } else {
+                        // Small UFO targets player directly + minor scatter
+                        float dx = player.pos.x - ufo.pos.x;
+                        float dy = player.pos.y - ufo.pos.y;
+                        fire_angle = atan2f(dx, -dy);
+                        float accuracy_offset = -0.3f + 0.6f * ((float)rand() / RAND_MAX);
+                        fire_angle += accuracy_offset * (4.0f / (3.0f + level)); // accuracy gets better in high levels
+                    }
+                    
+                    ufo_bullets[i].vel.x = sinf(fire_angle) * (BULLET_SPEED - 150.0f);
+                    ufo_bullets[i].vel.y = -cosf(fire_angle) * (BULLET_SPEED - 150.0f);
+                    ufo_bullets[i].color = (SDL_Color){255, 120, 120, 255}; // Reddish UFO bullets
+                    audio_play(SFX_UFO_FIRE);
+                    break;
+                }
+            }
+        }
+    } else {
+        ufo_spawn_timer -= delta_time;
+        if (ufo_spawn_timer <= 0.0f) {
+            spawn_ufo();
+        }
+    }
+
+    // --- Update UFO Bullets ---
+    for (int i = 0; i < MAX_UFO_BULLETS; i++) {
+        if (ufo_bullets[i].active) {
+            ufo_bullets[i].life -= delta_time;
+            if (ufo_bullets[i].life <= 0.0f) {
+                ufo_bullets[i].active = 0;
+            } else {
+                Vec2 ext_f = calculate_external_forces(ufo_bullets[i].pos);
+                ufo_bullets[i].vel.x += ext_f.x * delta_time;
+                ufo_bullets[i].vel.y += ext_f.y * delta_time;
+                ufo_bullets[i].pos.x += ufo_bullets[i].vel.x * delta_time;
+                ufo_bullets[i].pos.y += ufo_bullets[i].vel.y * delta_time;
+                wrap_position_ext(&ufo_bullets[i].pos, 2.0f);
+            }
+        }
+    }
+
+    // --- Update Shockwaves & Rifts ---
+    if (player_rift.active) {
+        player_rift.spawn_timer -= delta_time;
+        if (player_rift.spawn_timer <= 0.0f) {
+            player_rift.active = 0;
+        } else {
+            player_rift.pulse_timer += delta_time * 5.0f;
+            player_rift.angle1 += 2.0f * delta_time;
+            player_rift.angle2 -= 1.5f * delta_time;
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        if (shockwaves[i].active) {
+            shockwaves[i].life -= delta_time;
+            shockwaves[i].radius += (shockwaves[i].max_radius / 0.5f) * delta_time;
+            if (shockwaves[i].life <= 0.0f) {
+                shockwaves[i].active = 0;
+            } else {
+                for (int a = 0; a < MAX_ASTEROIDS; a++) {
+                    if (asteroids[a].active) {
+                        float dx = shockwaves[i].pos.x - asteroids[a].pos.x;
+                        float dy = shockwaves[i].pos.y - asteroids[a].pos.y;
+                        float dist = sqrtf(dx*dx + dy*dy);
+                        if (dist > shockwaves[i].radius - 10.0f && dist < shockwaves[i].radius + 10.0f) {
+                            asteroids[a].active = 0;
+                            int next_size = asteroids[a].size - 1;
+                            spawn_particles(asteroids[a].pos, 15, (SDL_Color){100, 255, 255, 255});
+                            if (next_size >= 1) { spawn_asteroid(asteroids[a].pos, next_size); spawn_asteroid(asteroids[a].pos, next_size); }
+                            score += 50;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Singularity Whip (Trail Damage)
+    if (player.active && player_upgrades.singularity_whip) {
+        for (int t = 0; t < MAX_TRAIL_POINTS; t++) {
+            if (player.trail[t].alpha > 0.1f) {
+                for (int a = 0; a < MAX_ASTEROIDS; a++) {
+                    if (asteroids[a].active && check_collision(player.trail[t].pos, player.trail[t].size + 5.0f, asteroids[a].pos, asteroids[a].radius)) {
+                        asteroids[a].active = 0;
+                        int next_size = asteroids[a].size - 1;
+                        spawn_particles(asteroids[a].pos, 15, (SDL_Color){255, 100, 255, 255});
+                        if (next_size >= 1) { spawn_asteroid(asteroids[a].pos, next_size); spawn_asteroid(asteroids[a].pos, next_size); }
+                        score += 100;
+                        player.trail[t].alpha = 0.0f;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Collision Detection ---
+    
+    // 1. Player Bullets vs Asteroids
+    for (int b = 0; b < MAX_BULLETS; b++) {
+        if (!bullets[b].active) continue;
+        for (int a = 0; a < MAX_ASTEROIDS; a++) {
+            if (!asteroids[a].active) continue;
+            
+            if (check_collision(bullets[b].pos, 1.0f, asteroids[a].pos, asteroids[a].radius)) {
+                // Shielded asteroid: strip shield, spawn yellow sparks, deflect bullet
+                if (asteroids[a].has_shield) {
+                    asteroids[a].has_shield = 0;
+                    if (!player_upgrades.piercing) bullets[b].active = 0;
+                    spawn_particles(asteroids[a].pos, 18, (SDL_Color){255, 220, 50, 255});
+                    audio_play(SFX_EXPLOSION_SM);
+                    break;
+                }
+                // Impact!
+                if (player_upgrades.resonance_cascade) {
+                    for (int s = 0; s < 4; s++) {
+                        if (!shockwaves[s].active) {
+                            shockwaves[s].active = 1; shockwaves[s].pos = asteroids[a].pos;
+                            shockwaves[s].radius = 10.0f; shockwaves[s].max_radius = 150.0f;
+                            shockwaves[s].thickness = 5.0f; shockwaves[s].life = 0.5f; break;
+                        }
+                    }
+                }
+                
+                if (!player_upgrades.piercing) {
+                    bullets[b].active = 0;
+                }
+                asteroids[a].active = 0;
+                
+                int next_size = asteroids[a].size - 1;
+                int points_added = (asteroids[a].size == 3) ? 20 : ((asteroids[a].size == 2) ? 50 : 100);
+
+                // Combo multiplier
+                combo_count++;
+                combo_timer = COMBO_WINDOW;
+                int combo_mult = (combo_count > 4) ? 4 : (combo_count > 2) ? 2 : 1;
+                points_added *= combo_mult;
+                score += points_added;
+
+                // Score floater
+                for (int sf = 0; sf < MAX_SCORE_FLOATS; sf++) {
+                    if (!score_floats[sf].active) {
+                        score_floats[sf].active = 1;
+                        score_floats[sf].x = asteroids[a].pos.x;
+                        score_floats[sf].y = asteroids[a].pos.y;
+                        score_floats[sf].vy = -60.0f;
+                        score_floats[sf].value = points_added;
+                        score_floats[sf].life = 1.2f;
+                        break;
+                    }
+                }
+                
+                // Explode particles
+                spawn_particles(asteroids[a].pos, 15, (SDL_Color){255, 255, 255, 255});
+                
+                // Spawn XP orbs
+                int orb_val = (asteroids[a].size == 3) ? 10 : ((asteroids[a].size == 2) ? 5 : 2);
+                spawn_orb(asteroids[a].pos, orb_val);
+
+                // Split asteroid
+                if (next_size >= 1) {
+                    spawn_asteroid(asteroids[a].pos, next_size);
+                    spawn_asteroid(asteroids[a].pos, next_size);
+                    audio_play(asteroids[a].size == 3 ? SFX_EXPLOSION_MD : SFX_EXPLOSION_SM);
+                } else {
+                    audio_play(SFX_EXPLOSION_SM);
+                }
+                
+                // Give extra life every 10,000 points
+                static int last_extra_life_score = 0;
+                if (score / 10000 > last_extra_life_score) {
+                    lives++;
+                    last_extra_life_score = score / 10000;
+                    // Play sweet life gain sound if we want, or just let it trigger
+                }
+                break;
+            }
+        }
+    }
+
+    // 2. UFO Bullets vs Asteroids
+    for (int b = 0; b < MAX_UFO_BULLETS; b++) {
+        if (!ufo_bullets[b].active) continue;
+        for (int a = 0; a < MAX_ASTEROIDS; a++) {
+            if (!asteroids[a].active) continue;
+            
+            if (check_collision(ufo_bullets[b].pos, 1.0f, asteroids[a].pos, asteroids[a].radius)) {
+                ufo_bullets[b].active = 0;
+                asteroids[a].active = 0;
+                
+                int next_size = asteroids[a].size - 1;
+                spawn_particles(asteroids[a].pos, 15, (SDL_Color){255, 120, 120, 255});
+                
+                if (next_size >= 1) {
+                    spawn_asteroid(asteroids[a].pos, next_size);
+                    spawn_asteroid(asteroids[a].pos, next_size);
+                    audio_play(asteroids[a].size == 3 ? SFX_EXPLOSION_MD : SFX_EXPLOSION_SM);
+                } else {
+                    audio_play(SFX_EXPLOSION_SM);
+                }
+                break;
+            }
+        }
+    }
+
+    // 3. Player Bullets vs UFO
+    if (ufo.active) {
+        for (int b = 0; b < MAX_BULLETS; b++) {
+            if (!bullets[b].active) continue;
+            
+            if (check_collision(bullets[b].pos, 1.0f, ufo.pos, ufo.radius)) {
+                bullets[b].active = 0;
+                ufo.active = 0;
+                audio_stop(SFX_UFO_LOOP);
+                audio_play(SFX_EXPLOSION_LG);
+                spawn_particles(ufo.pos, 25, (SDL_Color){255, 180, 50, 255});
+                
+                // Spawn several XP orbs for UFO
+                int orb_count = (ufo.size == 2) ? 5 : 15;
+                for (int o = 0; o < orb_count; o++) {
+                    spawn_orb(ufo.pos, (ufo.size == 2) ? 10 : 20);
+                }
+
+                score += (ufo.size == 2) ? 200 : 1000; // Small UFO is 1000 pts!
+                ufo_spawn_timer = 25.0f + ((float)rand() / RAND_MAX) * 15.0f;
+                break;
+            }
+        }
+    }
+
+    // 4. Ship vs Asteroids
+    if (player.active && player.invuln_timer <= 0.0f) {
+        for (int a = 0; a < MAX_ASTEROIDS; a++) {
+            if (!asteroids[a].active) continue;
+            
+            if (check_collision(player.pos, player.radius, asteroids[a].pos, asteroids[a].radius)) {
+                if (on_collision(1, a)) continue;
+                if (player_upgrades.shield_active) {
+                    player_upgrades.shield_active = 0;
+                    player.invuln_timer = 2.0f;
+                    audio_play(SFX_EXPLOSION_MD);
+                    
+                    // Destroy the asteroid
+                    asteroids[a].active = 0;
+                    int next_size = asteroids[a].size - 1;
+                    spawn_particles(asteroids[a].pos, 15, (SDL_Color){255, 255, 255, 255});
+                    if (next_size >= 1) {
+                        spawn_asteroid(asteroids[a].pos, next_size);
+                        spawn_asteroid(asteroids[a].pos, next_size);
+                    }
+                    continue;
+                }
+                
+                // Boom!
+                player.active = 0;
+                audio_play(SFX_EXPLOSION_LG);
+                audio_stop(SFX_THRUST);
+                spawn_particles(player.pos, 35, (SDL_Color){255, 200, 100, 255});
+                
+                // Destroy the asteroid too
+                asteroids[a].active = 0;
+                int next_size = asteroids[a].size - 1;
+                if (next_size >= 1) {
+                    spawn_asteroid(asteroids[a].pos, next_size);
+                    spawn_asteroid(asteroids[a].pos, next_size);
+                }
+                
+                lives--;
+                if (lives <= 0) {
+                    game_state = STATE_GAMEOVER;
+                    audio_stop(SFX_UFO_LOOP);
+                }
+                break;
+            }
+        }
+    }
+
+    // 5. Ship vs UFO / UFO Bullets
+    if (player.active && player.invuln_timer <= 0.0f) {
+        // Ship vs UFO
+        if (ufo.active && check_collision(player.pos, player.radius, ufo.pos, ufo.radius)) {
+            if (player_upgrades.shield_active) {
+                player_upgrades.shield_active = 0;
+                player.invuln_timer = 2.0f;
+                audio_play(SFX_EXPLOSION_MD);
+                
+                ufo.active = 0;
+                audio_stop(SFX_UFO_LOOP);
+                spawn_particles(ufo.pos, 25, (SDL_Color){255, 180, 50, 255});
+                ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
+            } else {
+                player.active = 0;
+                ufo.active = 0;
+                audio_stop(SFX_THRUST);
+                audio_stop(SFX_UFO_LOOP);
+                audio_play(SFX_EXPLOSION_LG);
+                spawn_particles(player.pos, 35, (SDL_Color){255, 200, 100, 255});
+                spawn_particles(ufo.pos, 25, (SDL_Color){255, 180, 50, 255});
+                
+                lives--;
+                if (lives <= 0) {
+                    game_state = STATE_GAMEOVER;
+                }
+                ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
+            }
+        }
+        
+        // Ship vs UFO Bullets
+        if (player.active && player.invuln_timer <= 0.0f) {
+            for (int b = 0; b < MAX_UFO_BULLETS; b++) {
+                if (ufo_bullets[b].active && check_collision(player.pos, player.radius, ufo_bullets[b].pos, 1.0f)) {
+                    if (player_upgrades.shield_active) {
+                        player_upgrades.shield_active = 0;
+                        player.invuln_timer = 2.0f;
+                        audio_play(SFX_EXPLOSION_MD);
+                        ufo_bullets[b].active = 0;
+                    } else {
+                        ufo_bullets[b].active = 0;
+                        player.active = 0;
+                        audio_play(SFX_EXPLOSION_LG);
+                        audio_stop(SFX_THRUST);
+                        spawn_particles(player.pos, 35, (SDL_Color){255, 200, 100, 255});
+                        
+                        lives--;
+                        if (lives <= 0) {
+                            game_state = STATE_GAMEOVER;
+                            audio_stop(SFX_UFO_LOOP);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void game_render() {
+    SDL_Color main_color = {220, 240, 255, 255}; // Glowing cool white/light cyan phosphor
+    
+    // Apply Vectrex persistence effect
+    float glow_values[] = {0.0f, 0.70f, 0.85f, 0.92f, 0.96f};
+    vg_apply_persistence(glow_values[settings_glow]); // fades slightly each frame
+    
+    // --- Draw Particles ---
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        if (particles[i].life > 0.0f) {
+            float fade = particles[i].life / particles[i].max_life;
+            SDL_Color col = particles[i].color;
+            col.a = (Uint8)(fade * 255);
+            
+            Vec2 p1 = {-1.0f, 0.0f};
+            Vec2 p2 = {1.0f, 0.0f};
+            Line pl = {p1, p2};
+            Shape s = {&pl, 1, col};
+            vg_draw_shape(&s, particles[i].pos, particles[i].angle, particles[i].scale * fade);
+        }
+    }
+
+    // --- Draw Orbs ---
+    for (int i = 0; i < MAX_ORBS; i++) {
+        if (orbs[i].active) {
+            SDL_Color orb_col = {150, 255, 150, 255};
+            static Line orb_lines[4];
+            static int orb_init = 0;
+            if (!orb_init) {
+                orb_init = 1;
+                orb_lines[0] = (Line){{-2,-2}, {2,-2}};
+                orb_lines[1] = (Line){{2,-2}, {2,2}};
+                orb_lines[2] = (Line){{2,2}, {-2,2}};
+                orb_lines[3] = (Line){{-2,2}, {-2,-2}};
+            }
+            Shape os = {orb_lines, 4, orb_col};
+            vg_draw_shape(&os, orbs[i].pos, orbs[i].life * 5.0f, 1.0f);
+        }
+    }
+
+    // --- Draw Asteroids ---
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (asteroids[i].active) {
+            Shape s;
+            s.lines = asteroids[i].lines;
+            s.line_count = asteroids[i].line_count;
+            // Color by size: large=cool blue-white, medium=warm orange, small=hot red
+            if (asteroids[i].size == 3) s.color = (SDL_Color){200, 220, 255, 255};
+            else if (asteroids[i].size == 2) s.color = (SDL_Color){255, 200, 130, 255};
+            else s.color = (SDL_Color){255, 130, 100, 255};
+            if (asteroids[i].has_shield) s.color = (SDL_Color){100, 255, 255, 255};
+            vg_draw_shape(&s, asteroids[i].pos, asteroids[i].angle, 1.0f);
+        }
+    }
+
+    // --- Draw Bullets ---
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        if (bullets[i].active) {
+            float vx = bullets[i].vel.x;
+            float vy = bullets[i].vel.y;
+            float len = sqrtf(vx*vx + vy*vy);
+            Vec2 p1 = {0, 0};
+            Vec2 p2 = { (vx / len) * 4.0f, (vy / len) * 4.0f };
+            Line l = {p1, p2};
+            Shape s = {&l, 1, bullets[i].color};
+            vg_draw_shape(&s, bullets[i].pos, 0.0f, 1.0f);
+        }
+    }
+
+    for (int i = 0; i < MAX_UFO_BULLETS; i++) {
+        if (ufo_bullets[i].active) {
+            float vx = ufo_bullets[i].vel.x;
+            float vy = ufo_bullets[i].vel.y;
+            float len = sqrtf(vx*vx + vy*vy);
+            Vec2 p1 = {0, 0};
+            Vec2 p2 = { (vx / len) * 4.0f, (vy / len) * 4.0f };
+            Line l = {p1, p2};
+            Shape s = {&l, 1, ufo_bullets[i].color};
+            vg_draw_shape(&s, ufo_bullets[i].pos, 0.0f, 1.0f);
+        }
+    }
+
+    if (ufo.active) {
+        Shape s;
+        s.lines = ufo.lines;
+        s.line_count = ufo.line_count;
+        s.color = (SDL_Color){255, 180, 180, 255};
+        vg_draw_shape(&s, ufo.pos, 0.0f, (ufo.size == 2) ? 1.0f : 0.5f);
+    }
+
+    if (player_rift.active) {
+        Shape rs;
+        rs.lines = ufo_lines; 
+        rs.line_count = 10;
+        rs.color = (SDL_Color){255, 50, 255, 255};
+        vg_draw_shape(&rs, player_rift.pos, player_rift.angle1, player_rift.radius / 16.0f);
+        vg_draw_shape(&rs, player_rift.pos, player_rift.angle2, (player_rift.radius / 16.0f) * 0.8f);
+    }
+    
+    for (int i = 0; i < 4; i++) {
+        if (shockwaves[i].active) {
+            static Line slines[16];
+            static int s_init = 0;
+            if (!s_init) {
+                s_init = 1;
+                for (int j=0; j<16; j++) {
+                    float a1 = j * (float)M_PI * 2 / 16;
+                    float a2 = (j+1) * (float)M_PI * 2 / 16;
+                    slines[j].p1 = (Vec2){cosf(a1), sinf(a1)};
+                    slines[j].p2 = (Vec2){cosf(a2), sinf(a2)};
+                }
+            }
+            Shape ss = {slines, 16, (SDL_Color){100, 255, 255, 150}};
+            vg_draw_shape(&ss, shockwaves[i].pos, 0.0f, shockwaves[i].radius);
+        }
+    }
+
+    // --- Draw Player ---
+    if (player.active) {
+        int visible = 1;
+        if (player.invuln_timer > 0.0f) visible = ((int)(player.invuln_timer * 10) % 2 == 0);
+        if (visible) {
+            Shape s = {player.lines, player.line_count, main_color};
+            vg_draw_shape(&s, player.pos, player.angle, 1.0f);
+            if (is_thrusting) {
+                // Animated multi-segment thruster flame flicker
+                static float flame_t = 0.0f; flame_t += 0.22f;
+                float fl = 10.0f + 6.0f * sinf(flame_t * 3.7f) + 3.0f * sinf(flame_t * 7.3f);
+                float fw = 2.5f + 1.5f * sinf(flame_t * 5.1f);
+                Line flines[3] = {
+                    {{-fw, 6.0f}, {0.0f, 6.0f + fl}},
+                    {{0.0f, 6.0f + fl}, {fw, 6.0f}},
+                    {{-fw*0.5f, 6.0f}, {fw*0.5f, 6.0f}}
+                };
+                float fade = 0.6f + 0.4f * sinf(flame_t * 11.0f);
+                SDL_Color fc = {
+                    255,
+                    (Uint8)(100 + 100 * fade),
+                    (Uint8)(20 * (1.0f - fade)),
+                    255
+                };
+                Shape fs = {flines, 3, fc};
+                vg_draw_shape(&fs, player.pos, player.angle, 1.0f);
+            }
+            if (player_upgrades.shield_active) {
+                static float shield_pulse = 0.0f; shield_pulse += 0.05f;
+                static Line shield_lines[8];
+                static int shield_init = 0;
+                if (!shield_init) { shield_init = 1; for (int i=0; i<8; i++) { float a1 = i*(float)M_PI/4.0f, a2 = (i+1)*(float)M_PI/4.0f; shield_lines[i].p1 = (Vec2){cosf(a1)*16.0f, sinf(a1)*16.0f}; shield_lines[i].p2 = (Vec2){cosf(a2)*16.0f, sinf(a2)*16.0f}; } }
+                Shape ss = {shield_lines, 8, (SDL_Color){100, 180, 255, 180}};
+                vg_draw_shape(&ss, player.pos, shield_pulse, 1.3f + 0.1f * sinf(shield_pulse * 2.0f));
+            }
+        }
+    }
+
+    // HUD
+    char hud_text[64];
+    sprintf(hud_text, "%05d", score); vf_draw_string(hud_text, 40, 25, 20, main_color);
+    sprintf(hud_text, "WAVE %d", level); vf_draw_string(hud_text, 40, 55, 12, (SDL_Color){150, 255, 150, 255});
+    // Combo display
+    if (combo_count >= 2) {
+        SDL_Color cc = (combo_count >= 4) ? (SDL_Color){255, 80, 80, 255} : (SDL_Color){255, 200, 50, 255};
+        sprintf(hud_text, "x%d COMBO!", combo_count);
+        vf_draw_string_centered(hud_text, SCREEN_WIDTH / 2.0f, 65, 18, cc);
+    }
+    // XP bar (flashes on fill)
+    float xp_percent = (float)player_xp / xp_threshold;
+    SDL_Color xp_col = (xp_flash_timer > 0.0f && ((int)(xp_flash_timer * 20) % 2 == 0))
+        ? (SDL_Color){255, 255, 255, 255} : (SDL_Color){100, 255, 100, 255};
+    Vec2 xp_p1 = {40, SCREEN_HEIGHT - 20}, xp_p2 = {40 + (SCREEN_WIDTH - 80) * xp_percent, SCREEN_HEIGHT - 20};
+    Line xp_l = {xp_p1, xp_p2}; Shape xp_s = {&xp_l, 1, xp_col}; vg_draw_shape(&xp_s, (Vec2){0,0}, 0.0f, 1.0f);
+    // XP bar track
+    Vec2 b_p1 = {40, SCREEN_HEIGHT - 22}, b_p2 = {SCREEN_WIDTH - 40, SCREEN_HEIGHT - 22};
+    Line b_l1 = {b_p1, b_p2}; Shape b_s1 = {&b_l1, 1, (SDL_Color){50, 50, 50, 255}}; vg_draw_shape(&b_s1, (Vec2){0,0}, 0.0f, 1.0f);
+    // XP label
+    sprintf(hud_text, "XP"); vf_draw_string(hud_text, SCREEN_WIDTH - 60, SCREEN_HEIGHT - 28, 10, (SDL_Color){80, 180, 80, 255});
+    // Top score
+    sprintf(hud_text, "%05d", high_scores[0].score > score ? high_scores[0].score : score);
+    vf_draw_string_centered(hud_text, SCREEN_WIDTH/2.0f, 25, 15, (SDL_Color){180, 220, 255, 180});
+    // Lives icons
+    for (int i = 0; i < lives - 1; i++) { Shape s = {ship_lines, sizeof(ship_lines)/sizeof(Line), main_color}; Vec2 pos = { 50.0f + i * 25.0f, 85.0f }; vg_draw_shape(&s, pos, 0.0f, 0.75f); }
+
+    // Upgrade icon strip (right side of screen, abbreviated)
+    if (game_state == STATE_PLAYING || game_state == STATE_ATTRACT_GAMEPLAY) {
+        float ix = SCREEN_WIDTH - 30.0f, iy = 120.0f;
+        SDL_Color ic = {100, 220, 255, 180};
+        int iw = 10;
+        if (player_upgrades.triple_shot)         { vf_draw_string("3X", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.max_bounces > 0)     { vf_draw_string("BNC", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.shield_active)       { vf_draw_string("SHD", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.piercing)            { vf_draw_string("PRC", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.homing)              { vf_draw_string("HOM", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.rear_gun)            { vf_draw_string("RRG", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.thermal_hull)        { vf_draw_string("RAM", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.singularity_displacer){ vf_draw_string("WRP", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.split_shot)          { vf_draw_string("SPL", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.resonance_cascade)   { vf_draw_string("RES", ix, iy, iw, ic); iy += 18.0f; }
+    }
+
+    // Score pop floaters
+    for (int i = 0; i < MAX_SCORE_FLOATS; i++) {
+        if (score_floats[i].active) {
+            float t = score_floats[i].life;
+            Uint8 alpha = (t > 0.8f) ? 255 : (Uint8)(t / 0.8f * 255);
+            SDL_Color fc = {255, 255, 100, alpha};
+            if (score_floats[i].value >= 200) fc = (SDL_Color){255, 150, 50, alpha};
+            if (score_floats[i].value >= 400) fc = (SDL_Color){255, 80, 80, alpha};
+            sprintf(hud_text, "+%d", score_floats[i].value);
+            vf_draw_string_centered(hud_text, score_floats[i].x, score_floats[i].y, 14, fc);
+        }
+    }
+
+    // Wave clear bonus message
+    if (wave_clear_msg_timer > 0.0f) {
+        float pulse = 1.0f + 0.08f * sinf(wave_clear_msg_timer * 20.0f);
+        SDL_Color wc = {150, 255, 150, 255};
+        sprintf(hud_text, "WAVE CLEAR!  +%d", wave_clear_bonus);
+        vf_draw_string_centered(hud_text, SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 40, 22 * pulse, wc);
+    }
+
+    if (god_mode_msg_timer > 0.0f) {
+        if (god_mode) {
+            vf_draw_string_centered("GOD MODE: ENABLED", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 50, 28, (SDL_Color){255, 50, 50, 255});
+        } else {
+            vf_draw_string_centered("GOD MODE: DISABLED", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 50, 28, (SDL_Color){100, 100, 255, 255});
+        }
+    }
+
+    // Edge flash: draw bright border lines at screen edges when player is about to wrap
+    if (edge_flash_timer > 0.0f) {
+        float alpha = edge_flash_timer / 0.15f;
+        SDL_Color ef = {255, 255, 255, (Uint8)(alpha * 180)};
+        float m = 4.0f;
+        Line el[4] = {
+            {{m, m}, {SCREEN_WIDTH - m, m}},
+            {{SCREEN_WIDTH - m, m}, {SCREEN_WIDTH - m, SCREEN_HEIGHT - m}},
+            {{SCREEN_WIDTH - m, SCREEN_HEIGHT - m}, {m, SCREEN_HEIGHT - m}},
+            {{m, SCREEN_HEIGHT - m}, {m, m}}
+        };
+        Shape es = {el, 4, ef};
+        vg_draw_shape(&es, (Vec2){0,0}, 0.0f, 1.0f);
+    }
+
+    if (game_state == STATE_TITLE) {
+        static float title_timer = 0.0f; title_timer += 0.016f;
+        vf_draw_string_centered("ASTEROIDS", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 160, 55 * (1.0f + 0.05f * sinf(title_timer * 2.0f)), main_color);
+        vf_draw_string_centered("V E C T R E X   E D I T I O N", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 70, 18, (SDL_Color){100, 200, 255, 255});
+        SDL_Color c1 = (menu_selection == 0) ? (SDL_Color){255, 255, 100, 255} : main_color;
+        SDL_Color c2 = (menu_selection == 1) ? (SDL_Color){255, 255, 100, 255} : main_color;
+        SDL_Color c3 = (menu_selection == 2) ? (SDL_Color){255, 255, 100, 255} : main_color;
+        vf_draw_string_centered("START GAME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 50, 22, c1);
+        vf_draw_string_centered("HIGH SCORES", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 100, 22, c2);
+        vf_draw_string_centered("SETTINGS", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 150, 22, c3);
+        if (menu_selection == 0) vf_draw_string(">", SCREEN_WIDTH/2.0f - 160, SCREEN_HEIGHT/2.0f + 50, 22, c1);
+        if (menu_selection == 1) vf_draw_string(">", SCREEN_WIDTH/2.0f - 170, SCREEN_HEIGHT/2.0f + 100, 22, c2);
+        if (menu_selection == 2) vf_draw_string(">", SCREEN_WIDTH/2.0f - 140, SCREEN_HEIGHT/2.0f + 150, 22, c3);
+    } else if (game_state == STATE_PAUSED) {
+        vf_draw_string_centered("PAUSED", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 120, 45, (SDL_Color){255, 255, 255, 255});
+        vf_draw_string_centered("S: SAVE GAME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 20, 22, main_color);
+        vf_draw_string_centered("L: LOAD GAME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 30, 22, main_color);
+        vf_draw_string_centered("Q: QUIT TO MENU", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 80, 22, main_color);
+        vf_draw_string_centered("PRESS ESC TO RESUME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 160, 16, (SDL_Color){180, 180, 180, 255});
+    } else if (game_state == STATE_SETTINGS) {
+        vf_draw_string_centered("SETTINGS", SCREEN_WIDTH/2.0f, 100, 35, (SDL_Color){150, 150, 255, 255});
+        SDL_Color s1 = (menu_selection == 0) ? (SDL_Color){255, 255, 100, 255} : main_color;
+        SDL_Color s2 = (menu_selection == 1) ? (SDL_Color){255, 255, 100, 255} : main_color;
+        SDL_Color s3 = (menu_selection == 2) ? (SDL_Color){255, 255, 100, 255} : main_color;
+        SDL_Color s4 = (menu_selection == 3) ? (SDL_Color){255, 255, 100, 255} : main_color;
+        
+        char v_text[64]; sprintf(v_text, "VOLUME: < %d%% >", settings_volume);
+        vf_draw_string_centered(v_text, SCREEN_WIDTH/2.0f, 250, 22, s1);
+        
+        char f_text[64]; sprintf(f_text, "SCREEN: < %s >", settings_fullscreen ? "FULL" : "WINDOW");
+        vf_draw_string_centered(f_text, SCREEN_WIDTH/2.0f, 300, 22, s2);
+        
+        char d_text[64]; sprintf(d_text, "DIFFICULTY: < %s >", difficulty_names[difficulty]); 
+        vf_draw_string_centered(d_text, SCREEN_WIDTH/2.0f, 350, 22, s3);
+
+        const char *glow_names[] = {"OFF", "LOW", "MED", "HIGH", "MAX"};
+        char g_text[64]; sprintf(g_text, "PHOSPHOR GLOW: < %s >", glow_names[settings_glow]);
+        vf_draw_string_centered(g_text, SCREEN_WIDTH/2.0f, 400, 22, s4);
+        
+        vf_draw_string_centered("PRESS SPACE OR ESC TO RETURN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 250, 16, (SDL_Color){180, 180, 180, 255});
+        
+        if (menu_selection == 0) {
+            float tw = (strlen(v_text) * 22 * 1.2f) - (22 * 0.2f);
+            vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, 250, 22, s1);
+        }
+        if (menu_selection == 1) {
+            float tw = (strlen(f_text) * 22 * 1.2f) - (22 * 0.2f);
+            vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, 300, 22, s2);
+        }
+        if (menu_selection == 2) {
+            float tw = (strlen(d_text) * 22 * 1.2f) - (22 * 0.2f);
+            vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, 350, 22, s3);
+        }
+        if (menu_selection == 3) {
+            float tw = (strlen(g_text) * 22 * 1.2f) - (22 * 0.2f);
+            vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, 400, 22, s4);
+        }
+    } else if (game_state == STATE_HIGHSCORES) {
+        vf_draw_string_centered("GALAXY LEGENDS", SCREEN_WIDTH/2.0f, 100, 35, (SDL_Color){255, 255, 150, 255});
+        for (int i=0; i<5; i++) { char sl[64]; sprintf(sl, "%d.  %s  %05d", i+1, high_scores[i].initials, high_scores[i].score); vf_draw_string_centered(sl, SCREEN_WIDTH/2.0f, 220 + i*50, 24, main_color); }
+        vf_draw_string_centered("PRESS SPACE TO RETURN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 100, 16, (SDL_Color){180, 180, 180, 255});
+    } else if (game_state == STATE_GAMEOVER) {
+        vf_draw_string_centered("GAME OVER", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 50, 35, (SDL_Color){255, 100, 100, 255});
+        vf_draw_string_centered("PRESS ENTER TO CONTINUE", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 20, 18, main_color);
+    } else if (game_state == STATE_NEW_HIGHSCORE) {
+        vf_draw_string_centered("NEW HIGH SCORE!", SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f - 100, 30, (SDL_Color){255, 255, 100, 255});
+        vf_draw_string_centered("ENTER INITIALS:", SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f - 30, 20, main_color);
+        char di[8]; sprintf(di, "%c %c %c", temp_initials[0], temp_initials[1], temp_initials[2]); 
+        vf_draw_string_centered(di, SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f + 30, 30, main_color);
+    } else if (game_state == STATE_UPGRADE_SELECT) {
+        static float upgrade_pulse = 0.0f; upgrade_pulse += 0.04f;
+        float sz = 25.0f + 2.0f * sinf(upgrade_pulse * 3.0f);
+        vf_draw_string_centered("XP OVERLOAD!", SCREEN_WIDTH/2.0f, 95, sz, (SDL_Color){100, 255, 150, 255});
+        vf_draw_string_centered("CHOOSE YOUR UPGRADE", SCREEN_WIDTH/2.0f, 150, 16, (SDL_Color){200, 200, 200, 255});
+        vf_draw_string_centered("ARROW KEYS + SPACE", SCREEN_WIDTH/2.0f, 175, 12, (SDL_Color){120, 120, 120, 255});
+        for (int i=0; i<3; i++) {
+            int is_sel = (i == selected_option);
+            float pulse_s = is_sel ? (1.0f + 0.06f * sinf(upgrade_pulse * 5.0f + i)) : 1.0f;
+            SDL_Color col = is_sel ? (SDL_Color){255, 255, 80, 255} : (SDL_Color){140, 140, 140, 255};
+            float y_pos = 250.0f + i * 90.0f;
+            // Draw bracket box around selected
+            if (is_sel) {
+                float bw = 300.0f, bh = 70.0f;
+                float bx = SCREEN_WIDTH/2.0f - bw/2.0f - 10.0f, by = y_pos - 15.0f;
+                Line bl[4] = {{{bx,by},{bx+bw,by}}, {{bx+bw,by},{bx+bw,by+bh}}, {{bx+bw,by+bh},{bx,by+bh}}, {{bx,by+bh},{bx,by}}};
+                Shape bs = {bl, 4, (SDL_Color){255, 255, 80, 60}};
+                vg_draw_shape(&bs, (Vec2){0,0}, 0.0f, 1.0f);
+            }
+            char ot[64]; sprintf(ot, "%s", upgrade_names[upgrade_options[i]]);
+            vf_draw_string_centered(ot, SCREEN_WIDTH/2.0f, y_pos, 20 * pulse_s, col);
+            if (is_sel) {
+                vf_draw_string_centered(upgrade_descs[upgrade_options[i]], SCREEN_WIDTH/2.0f, y_pos + 28, 11, (SDL_Color){190, 190, 190, 255});
+                float tw = (strlen(upgrade_names[upgrade_options[i]]) * 20 * 1.2f) - (20 * 0.2f);
+                vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, y_pos, 20, col);
+            }
+        }
+    }
+    vg_present();
+}

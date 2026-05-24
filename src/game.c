@@ -88,8 +88,9 @@ typedef struct {
     int line_count;
     float bullet_cooldown;
     float invuln_timer;
-    TrailPoint trail[MAX_TRAIL_POINTS];
-    int trail_idx;
+    Vec2 trail_pos[PHOS_TRAIL_LEN];
+    float trail_ang[PHOS_TRAIL_LEN];
+    int trail_head;
 } ShipEntity;
 
 typedef struct {
@@ -310,6 +311,10 @@ static float edge_flash_timer = 0.0f;
 // Near-miss adrenaline XP
 static float near_miss_cooldown = 0.0f;
 
+static Vec2 camera_pos = {0.0f, 0.0f};
+static int wave_asteroids_destroyed = 0;
+static int wave_cleared_pending = 0;
+
 static int player_level = 1;
 static int player_xp = 0;
 static int xp_threshold = 100;
@@ -485,6 +490,7 @@ static int on_collision(int is_player_asteroid, int asteroid_idx) {
         float speed_sq = player.vel.x * player.vel.x + player.vel.y * player.vel.y;
         if (speed_sq > 120.0f * 120.0f) {
             asteroids[asteroid_idx].active = 0;
+            wave_asteroids_destroyed++;
             int next_size = asteroids[asteroid_idx].size - 1;
             spawn_particles(asteroids[asteroid_idx].pos, 25, (SDL_Color){255, 100, 50, 255});
             if (next_size >= 1) {
@@ -587,6 +593,16 @@ static void load_game() {
     
     player.active = 1;
     game_state = STATE_PLAYING;
+}
+
+static float distance_sq(Vec2 p1, Vec2 p2) {
+    float dx = p1.x - p2.x;
+    float dy = p1.y - p2.y;
+    return dx*dx + dy*dy;
+}
+
+static int get_target_asteroids() {
+    return 10 + level * 2;
 }
 
 static void spawn_particles(Vec2 pos, int count, SDL_Color color) {
@@ -831,23 +847,23 @@ static void start_next_level() {
     ufo.active = 0;
     audio_stop(SFX_UFO_LOOP);
 
-    // Spawn new asteroids at distance from center
+    // Spawn new asteroids at distance from player
     for (int i = 0; i < count; i++) {
-        Vec2 pos;
-        do {
-            pos.x = ((float)rand() / RAND_MAX) * SCREEN_WIDTH;
-            pos.y = ((float)rand() / RAND_MAX) * SCREEN_HEIGHT;
-        } while (check_collision(pos, 60.0f, (Vec2){SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f}, 60.0f));
-
+        float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+        float dist = 450.0f + ((float)rand() / RAND_MAX) * 300.0f;
+        Vec2 pos = {
+            player.pos.x + cosf(angle) * dist,
+            player.pos.y + sinf(angle) * dist
+        };
         spawn_asteroid(pos, 3);
     }
     // Spawn Anomalous Void Rift in level >= 4
     if (level >= 4) {
         rift.active = 1;
-        do {
-            rift.pos.x = 100.0f + ((float)rand() / RAND_MAX) * (SCREEN_WIDTH - 200.0f);
-            rift.pos.y = 100.0f + ((float)rand() / RAND_MAX) * (SCREEN_HEIGHT - 200.0f);
-        } while (check_collision(rift.pos, 150.0f, (Vec2){SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f}, 60.0f));
+        float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+        float dist = 450.0f + ((float)rand() / RAND_MAX) * 300.0f;
+        rift.pos.x = player.pos.x + cosf(angle) * dist;
+        rift.pos.y = player.pos.y + sinf(angle) * dist;
         rift.radius = 35.0f;
         rift.angle1 = 0.0f;
         rift.angle2 = 0.0f;
@@ -880,6 +896,9 @@ static void start_new_game() {
     combo_count = 0; combo_timer = 0.0f;
     wave_clear_msg_timer = 0.0f;
     ufo.active = 0;
+    wave_asteroids_destroyed = 0;
+    wave_cleared_pending = 0;
+    camera_pos = (Vec2){0.0f, 0.0f};
 
     // Reset player upgrades
     player_upgrades.triple_shot = 0;
@@ -925,8 +944,11 @@ void game_init() {
     }
     player.radius = 8.0f;
     player.active = 0;
-    player.trail_idx = 0;
-    for (int i = 0; i < MAX_TRAIL_POINTS; i++) player.trail[i].alpha = 0.0f;
+    player.trail_head = 0;
+    for (int i = 0; i < PHOS_TRAIL_LEN; i++) {
+        player.trail_pos[i] = (Vec2){0.0f, 0.0f};
+        player.trail_ang[i] = 0.0f;
+    }
 }
 
 void game_set_paused(int paused) {
@@ -1083,7 +1105,11 @@ void game_handle_input(SDL_Event *event) {
                 selected_option = (selected_option + 1) % 3;
             } else if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
                 apply_upgrade(upgrade_options[selected_option]);
-                game_state = STATE_PLAYING;
+                if (wave_cleared_pending) {
+                    wave_cleared_pending = 0;
+                    start_next_level();
+                }
+                game_state = is_attract_ai ? STATE_ATTRACT_GAMEPLAY : STATE_PLAYING;
             }
         }
     }
@@ -1097,6 +1123,17 @@ void game_handle_input(SDL_Event *event) {
 
 
 void game_update(float delta_time) {
+    if (game_state == STATE_PLAYING || game_state == STATE_ATTRACT_GAMEPLAY) {
+        if (player.active) {
+            float target_cam_x = player.pos.x - SCREEN_WIDTH / 2.0f;
+            float target_cam_y = player.pos.y - SCREEN_HEIGHT / 2.0f;
+            camera_pos.x += (target_cam_x - camera_pos.x) * 6.0f * delta_time;
+            camera_pos.y += (target_cam_y - camera_pos.y) * 6.0f * delta_time;
+        }
+    } else {
+        camera_pos = (Vec2){0.0f, 0.0f};
+    }
+
     if (god_mode_msg_timer > 0.0f) {
         god_mode_msg_timer -= delta_time;
     }
@@ -1123,6 +1160,10 @@ void game_update(float delta_time) {
             ai_upgrade_timer = 0.0f;
             selected_option = rand() % 3;
             apply_upgrade(upgrade_options[selected_option]);
+            if (wave_cleared_pending) {
+                wave_cleared_pending = 0;
+                start_next_level();
+            }
             game_state = STATE_ATTRACT_GAMEPLAY;
         }
     }
@@ -1198,7 +1239,11 @@ void game_update(float delta_time) {
         if (particles[i].life > 0.0f) {
             particles[i].life -= delta_time;
             particles[i].angle += particles[i].rot_speed * delta_time;
-            update_physics(&particles[i].pos, &particles[i].vel, delta_time, 5.0f, 1.0f);
+            particles[i].pos.x += particles[i].vel.x * delta_time;
+            particles[i].pos.y += particles[i].vel.y * delta_time;
+            if (player.active && distance_sq(particles[i].pos, player.pos) > 1300.0f * 1300.0f) {
+                particles[i].life = 0.0f;
+            }
         }
     }
 
@@ -1212,7 +1257,28 @@ void game_update(float delta_time) {
             asteroids[i].trail_ang[asteroids[i].trail_head] = asteroids[i].angle;
             asteroids[i].trail_head = (asteroids[i].trail_head + 1) % PHOS_TRAIL_LEN;
             asteroids[i].angle += asteroids[i].rot_speed * delta_time;
-            update_physics(&asteroids[i].pos, &asteroids[i].vel, delta_time, asteroids[i].radius + 5.0f, 1.0f);
+            
+            // Move asteroid without wrap-around:
+            Vec2 ext_f = calculate_external_forces(asteroids[i].pos);
+            asteroids[i].vel.x += ext_f.x * delta_time;
+            asteroids[i].vel.y += ext_f.y * delta_time;
+            asteroids[i].pos.x += asteroids[i].vel.x * delta_time;
+            asteroids[i].pos.y += asteroids[i].vel.y * delta_time;
+
+            // If asteroid is too far from player, reposition it!
+            if (player.active) {
+                float dist_sq = distance_sq(asteroids[i].pos, player.pos);
+                if (dist_sq > 1200.0f * 1200.0f) {
+                    float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+                    float dist = 850.0f + ((float)rand() / RAND_MAX) * 250.0f;
+                    asteroids[i].pos.x = player.pos.x + cosf(angle) * dist;
+                    asteroids[i].pos.y = player.pos.y + sinf(angle) * dist;
+                    // Reset trail to prevent line artifacts stretching across the screen
+                    for (int t = 0; t < PHOS_TRAIL_LEN; t++) {
+                        asteroids[i].trail_pos[t] = asteroids[i].pos;
+                    }
+                }
+            }
         }
     }
 
@@ -1235,13 +1301,16 @@ void game_update(float delta_time) {
     }
 
     // --- Check level complete ---
-    if (active_asteroids_count == 0 && level_start_timer > 0.0f) {
+    int target_ast = get_target_asteroids();
+    if (player.active && wave_asteroids_destroyed >= target_ast && level_start_timer > 0.0f) {
         level_start_timer -= delta_time;
         if (level_start_timer <= 0.0f) {
             // Award wave clear bonus
             wave_clear_bonus = 500 + level * 100;
             score += wave_clear_bonus;
             wave_clear_msg_timer = 2.5f;
+            wave_cleared_pending = 1;
+            wave_asteroids_destroyed = 0;
             spawn_upgrade_options();
             game_state = STATE_UPGRADE_SELECT;
         }
@@ -1313,13 +1382,11 @@ void game_update(float delta_time) {
         if (thrust_key_down && !thrust_key_was_down) {
             Uint32 now = SDL_GetTicks();
             if (player_upgrades.singularity_displacer && (now - last_thrust_tap) < 300) {
-                WrapEvent warp_ev = {1, player.pos, player.pos};
-                player.pos.x = SCREEN_WIDTH - player.pos.x;
-                player.pos.y = SCREEN_HEIGHT - player.pos.y;
-                warp_ev.exit_pos = player.pos;
-                on_screen_wrap(warp_ev);
-                spawn_particles(warp_ev.entry_pos, 20, (SDL_Color){100, 100, 255, 255});
-                spawn_particles(warp_ev.exit_pos, 20, (SDL_Color){100, 100, 255, 255});
+                Vec2 old_pos = player.pos;
+                player.pos.x += sinf(player.angle) * 400.0f;
+                player.pos.y -= cosf(player.angle) * 400.0f;
+                spawn_particles(old_pos, 20, (SDL_Color){100, 100, 255, 255});
+                spawn_particles(player.pos, 20, (SDL_Color){100, 100, 255, 255});
                 audio_play(SFX_EXPLOSION_MD);
             }
             last_thrust_tap = now;
@@ -1344,11 +1411,19 @@ void game_update(float delta_time) {
             fire_cooldown_timer -= delta_time;
         }
 
-        // Apply Physics (Friction, External Forces, Velocity, Wrap)
-        WrapEvent player_wrap = update_physics(&player.pos, &player.vel, delta_time, player.radius + 5.0f, FRICTION);
-        if (player_wrap.wrapped) {
-            on_screen_wrap(player_wrap);
-        }
+        // Record trail
+        player.trail_pos[player.trail_head] = player.pos;
+        player.trail_ang[player.trail_head] = player.angle;
+        player.trail_head = (player.trail_head + 1) % PHOS_TRAIL_LEN;
+
+        // Apply Physics (Friction, External Forces, Velocity)
+        Vec2 ext_f = calculate_external_forces(player.pos);
+        player.vel.x += ext_f.x * delta_time;
+        player.vel.y += ext_f.y * delta_time;
+        player.vel.x *= powf(FRICTION, delta_time * 60.0f);
+        player.vel.y *= powf(FRICTION, delta_time * 60.0f);
+        player.pos.x += player.vel.x * delta_time;
+        player.pos.y += player.vel.y * delta_time;
 
         if (fire_key_down && fire_cooldown_timer <= 0.0f) {
             int bullets_to_fire = player_upgrades.triple_shot ? 3 : 1;
@@ -1372,6 +1447,11 @@ void game_update(float delta_time) {
                         float nose_x = player.pos.x + sinf(angle) * 12.0f;
                         float nose_y = player.pos.y - cosf(angle) * 12.0f;
                         bullets[i].pos = (Vec2){nose_x, nose_y};
+                        bullets[i].trail_head = 0;
+                        for (int t = 0; t < PHOS_TRAIL_LEN; t++) {
+                            bullets[i].trail_pos[t] = bullets[i].pos;
+                            bullets[i].trail_ang[t] = 0.0f;
+                        }
                         
                         // Add velocity
                         bullets[i].vel.x = sinf(angle) * BULLET_SPEED * player_upgrades.bullet_speed_mult;
@@ -1442,7 +1522,11 @@ void game_update(float delta_time) {
                     orbs[i].vel.y += (dy / dist) * pull * delta_time;
                 }
             }
-            update_physics(&orbs[i].pos, &orbs[i].vel, delta_time, 5.0f, 1.0f);
+            orbs[i].pos.x += orbs[i].vel.x * delta_time;
+            orbs[i].pos.y += orbs[i].vel.y * delta_time;
+            if (player.active && distance_sq(orbs[i].pos, player.pos) > 1300.0f * 1300.0f) {
+                orbs[i].active = 0;
+            }
 
             // Collection
             if (player.active && check_collision(player.pos, player.radius + 5.0f, orbs[i].pos, 6.0f)) {
@@ -1483,11 +1567,21 @@ void game_update(float delta_time) {
                 // Bouncy bullets logic
                 if (player_upgrades.max_bounces > 0 && bullets[i].bounces < player_upgrades.max_bounces) {
                     int bounced = 0;
-                    if (bullets[i].pos.x < 0 || bullets[i].pos.x > SCREEN_WIDTH) {
+                    if (bullets[i].pos.x < camera_pos.x) {
+                        bullets[i].pos.x = camera_pos.x;
+                        bullets[i].vel.x = -bullets[i].vel.x;
+                        bounced = 1;
+                    } else if (bullets[i].pos.x > camera_pos.x + SCREEN_WIDTH) {
+                        bullets[i].pos.x = camera_pos.x + SCREEN_WIDTH;
                         bullets[i].vel.x = -bullets[i].vel.x;
                         bounced = 1;
                     }
-                    if (bullets[i].pos.y < 0 || bullets[i].pos.y > SCREEN_HEIGHT) {
+                    if (bullets[i].pos.y < camera_pos.y) {
+                        bullets[i].pos.y = camera_pos.y;
+                        bullets[i].vel.y = -bullets[i].vel.y;
+                        bounced = 1;
+                    } else if (bullets[i].pos.y > camera_pos.y + SCREEN_HEIGHT) {
+                        bullets[i].pos.y = camera_pos.y + SCREEN_HEIGHT;
                         bullets[i].vel.y = -bullets[i].vel.y;
                         bounced = 1;
                     }
@@ -1495,7 +1589,9 @@ void game_update(float delta_time) {
                         bullets[i].bounces++;
                     }
                 } else {
-                    wrap_position_ext(&bullets[i].pos, 2.0f);
+                    if (player.active && distance_sq(bullets[i].pos, player.pos) > 1300.0f * 1300.0f) {
+                        bullets[i].active = 0;
+                    }
                 }
             }
         }
@@ -1503,6 +1599,11 @@ void game_update(float delta_time) {
 
     // --- Update UFO ---
     if (ufo.active) {
+        // Record trail
+        ufo.trail_pos[ufo.trail_head] = ufo.pos;
+        ufo.trail_ang[ufo.trail_head] = 0.0f;
+        ufo.trail_head = (ufo.trail_head + 1) % PHOS_TRAIL_LEN;
+
         Vec2 ext_f = calculate_external_forces(ufo.pos);
         ufo.vel.x += ext_f.x * delta_time;
         ufo.vel.y += ext_f.y * delta_time;
@@ -1524,15 +1625,14 @@ void game_update(float delta_time) {
             }
             ufo.pos.x += ufo.vel.x * delta_time;
             ufo.pos.y += ufo.vel.y * delta_time;
-            wrap_position_ext(&ufo.pos, ufo.radius);
         } else if (ufo.size == 4) {
             // Boundary Weaver (Bomber)
             ufo.pos.x += ufo.vel.x * delta_time;
             float dy = ufo.target_y - ufo.pos.y;
             ufo.pos.y += dy * 2.0f * delta_time;
             
-            if ((ufo.vel.x > 0.0f && ufo.pos.x > SCREEN_WIDTH + ufo.radius) || 
-                (ufo.vel.x < 0.0f && ufo.pos.x < -ufo.radius)) {
+            if ((ufo.vel.x > 0.0f && ufo.pos.x > camera_pos.x + SCREEN_WIDTH + ufo.radius) || 
+                (ufo.vel.x < 0.0f && ufo.pos.x < camera_pos.x - ufo.radius)) {
                 ufo.active = 0;
                 audio_stop(SFX_UFO_LOOP);
                 ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
@@ -1542,8 +1642,8 @@ void game_update(float delta_time) {
             ufo.pos.x += ufo.vel.x * 0.3f * delta_time; 
             ufo.pos.y += sinf(SDL_GetTicks() / 500.0f) * 20.0f * delta_time; 
             
-            if ((ufo.vel.x > 0.0f && ufo.pos.x > SCREEN_WIDTH + ufo.radius) || 
-                (ufo.vel.x < 0.0f && ufo.pos.x < -ufo.radius)) {
+            if ((ufo.vel.x > 0.0f && ufo.pos.x > camera_pos.x + SCREEN_WIDTH + ufo.radius) || 
+                (ufo.vel.x < 0.0f && ufo.pos.x < camera_pos.x - ufo.radius)) {
                 ufo.active = 0;
                 audio_stop(SFX_UFO_LOOP);
                 ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
@@ -1558,47 +1658,61 @@ void game_update(float delta_time) {
             }
             ufo.pos.y += ufo.vel.y * delta_time;
             
-            if (ufo.pos.y < 50.0f) { ufo.pos.y = 50.0f; ufo.vel.y = -ufo.vel.y; }
-            if (ufo.pos.y > SCREEN_HEIGHT - 50.0f) { ufo.pos.y = SCREEN_HEIGHT - 50.0f; ufo.vel.y = -ufo.vel.y; }
-
-            if ((ufo.vel.x > 0.0f && ufo.pos.x > SCREEN_WIDTH + ufo.radius) || 
-                (ufo.vel.x < 0.0f && ufo.pos.x < -ufo.radius)) {
+            if (ufo.pos.y < camera_pos.y + 50.0f) { ufo.pos.y = camera_pos.y + 50.0f; ufo.vel.y = -ufo.vel.y; }
+            if (ufo.pos.y > camera_pos.y + SCREEN_HEIGHT - 50.0f) { ufo.pos.y = camera_pos.y + SCREEN_HEIGHT - 50.0f; ufo.vel.y = -ufo.vel.y; }
+ 
+            if ((ufo.vel.x > 0.0f && ufo.pos.x > camera_pos.x + SCREEN_WIDTH + ufo.radius) || 
+                (ufo.vel.x < 0.0f && ufo.pos.x < camera_pos.x - ufo.radius)) {
                 ufo.active = 0;
                 audio_stop(SFX_UFO_LOOP);
                 ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
             }
         }
 
+        // General distance deactivation for all UFOs in free roam
+        if (player.active && distance_sq(ufo.pos, player.pos) > 1600.0f * 1600.0f) {
+            ufo.active = 0;
+            audio_stop(SFX_UFO_LOOP);
+            ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
+        }
+
         // Firing logic
-        ufo.fire_timer -= delta_time;
-        if (ufo.fire_timer <= 0.0f && player.active) {
-            ufo.fire_timer = (ufo.size == 2) ? 1.5f : 1.0f; // Small UFO fires faster
-            
-            // Look for empty UFO bullet slot
-            for (int i = 0; i < MAX_UFO_BULLETS; i++) {
-                if (!ufo_bullets[i].active) {
-                    ufo_bullets[i].active = 1;
-                    ufo_bullets[i].life = BULLET_LIFE;
-                    ufo_bullets[i].pos = ufo.pos;
-                    
-                    float fire_angle = 0.0f;
-                    if (ufo.size == 2) {
-                        // Large UFO fires in complete random direction
-                        fire_angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
-                    } else {
-                        // Small UFO targets player directly + minor scatter
-                        float dx = player.pos.x - ufo.pos.x;
-                        float dy = player.pos.y - ufo.pos.y;
-                        fire_angle = atan2f(dx, -dy);
-                        float accuracy_offset = -0.3f + 0.6f * ((float)rand() / RAND_MAX);
-                        fire_angle += accuracy_offset * (4.0f / (3.0f + level)); // accuracy gets better in high levels
+        if (ufo.active) {
+            ufo.fire_timer -= delta_time;
+            if (ufo.fire_timer <= 0.0f && player.active) {
+                ufo.fire_timer = (ufo.size == 2) ? 1.5f : 1.0f; // Small UFO fires faster
+                
+                // Look for empty UFO bullet slot
+                for (int i = 0; i < MAX_UFO_BULLETS; i++) {
+                    if (!ufo_bullets[i].active) {
+                        ufo_bullets[i].active = 1;
+                        ufo_bullets[i].life = BULLET_LIFE;
+                        ufo_bullets[i].pos = ufo.pos;
+                        ufo_bullets[i].trail_head = 0;
+                        for (int t = 0; t < PHOS_TRAIL_LEN; t++) {
+                            ufo_bullets[i].trail_pos[t] = ufo.pos;
+                            ufo_bullets[i].trail_ang[t] = 0.0f;
+                        }
+                        
+                        float fire_angle = 0.0f;
+                        if (ufo.size == 2) {
+                            // Large UFO fires in complete random direction
+                            fire_angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+                        } else {
+                            // Small UFO targets player directly + minor scatter
+                            float dx = player.pos.x - ufo.pos.x;
+                            float dy = player.pos.y - ufo.pos.y;
+                            fire_angle = atan2f(dx, -dy);
+                            float accuracy_offset = -0.3f + 0.6f * ((float)rand() / RAND_MAX);
+                            fire_angle += accuracy_offset * (4.0f / (3.0f + level)); // accuracy gets better in high levels
+                        }
+                        
+                        ufo_bullets[i].vel.x = sinf(fire_angle) * (BULLET_SPEED - 150.0f);
+                        ufo_bullets[i].vel.y = -cosf(fire_angle) * (BULLET_SPEED - 150.0f);
+                        ufo_bullets[i].color = (SDL_Color){255, 120, 120, 255}; // Reddish UFO bullets
+                        audio_play(SFX_UFO_FIRE);
+                        break;
                     }
-                    
-                    ufo_bullets[i].vel.x = sinf(fire_angle) * (BULLET_SPEED - 150.0f);
-                    ufo_bullets[i].vel.y = -cosf(fire_angle) * (BULLET_SPEED - 150.0f);
-                    ufo_bullets[i].color = (SDL_Color){255, 120, 120, 255}; // Reddish UFO bullets
-                    audio_play(SFX_UFO_FIRE);
-                    break;
                 }
             }
         }
@@ -1612,6 +1726,10 @@ void game_update(float delta_time) {
     // --- Update UFO Bullets ---
     for (int i = 0; i < MAX_UFO_BULLETS; i++) {
         if (ufo_bullets[i].active) {
+            ufo_bullets[i].trail_pos[ufo_bullets[i].trail_head] = ufo_bullets[i].pos;
+            ufo_bullets[i].trail_ang[ufo_bullets[i].trail_head] = 0.0f;
+            ufo_bullets[i].trail_head = (ufo_bullets[i].trail_head + 1) % PHOS_TRAIL_LEN;
+
             ufo_bullets[i].life -= delta_time;
             if (ufo_bullets[i].life <= 0.0f) {
                 ufo_bullets[i].active = 0;
@@ -1621,7 +1739,10 @@ void game_update(float delta_time) {
                 ufo_bullets[i].vel.y += ext_f.y * delta_time;
                 ufo_bullets[i].pos.x += ufo_bullets[i].vel.x * delta_time;
                 ufo_bullets[i].pos.y += ufo_bullets[i].vel.y * delta_time;
-                wrap_position_ext(&ufo_bullets[i].pos, 2.0f);
+                
+                if (player.active && distance_sq(ufo_bullets[i].pos, player.pos) > 1300.0f * 1300.0f) {
+                    ufo_bullets[i].active = 0;
+                }
             }
         }
     }
@@ -1635,6 +1756,17 @@ void game_update(float delta_time) {
             player_rift.pulse_timer += delta_time * 5.0f;
             player_rift.angle1 += 2.0f * delta_time;
             player_rift.angle2 -= 1.5f * delta_time;
+        }
+    }
+    if (rift.active) {
+        rift.pulse_timer += delta_time * 5.0f;
+        rift.angle1 += 2.0f * delta_time;
+        rift.angle2 -= 1.5f * delta_time;
+        if (player.active && distance_sq(rift.pos, player.pos) > 1600.0f * 1600.0f) {
+            float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+            float dist = 850.0f + ((float)rand() / RAND_MAX) * 250.0f;
+            rift.pos.x = player.pos.x + cosf(angle) * dist;
+            rift.pos.y = player.pos.y + sinf(angle) * dist;
         }
     }
     for (int i = 0; i < 4; i++) {
@@ -1664,17 +1796,20 @@ void game_update(float delta_time) {
 
     // Singularity Whip (Trail Damage)
     if (player.active && player_upgrades.singularity_whip) {
-        for (int t = 0; t < MAX_TRAIL_POINTS; t++) {
-            if (player.trail[t].alpha > 0.1f) {
-                for (int a = 0; a < MAX_ASTEROIDS; a++) {
-                    if (asteroids[a].active && check_collision(player.trail[t].pos, player.trail[t].size + 5.0f, asteroids[a].pos, asteroids[a].radius)) {
-                        asteroids[a].active = 0;
-                        int next_size = asteroids[a].size - 1;
-                        spawn_particles(asteroids[a].pos, 15, (SDL_Color){255, 100, 255, 255});
-                        if (next_size >= 1) { spawn_asteroid(asteroids[a].pos, next_size); spawn_asteroid(asteroids[a].pos, next_size); }
-                        score += 100;
-                        player.trail[t].alpha = 0.0f;
+        for (int t = 0; t < PHOS_TRAIL_LEN; t++) {
+            Vec2 t_pos = player.trail_pos[t];
+            if (t_pos.x == 0.0f && t_pos.y == 0.0f) continue;
+            for (int a = 0; a < MAX_ASTEROIDS; a++) {
+                if (asteroids[a].active && check_collision(t_pos, 15.0f, asteroids[a].pos, asteroids[a].radius)) {
+                    asteroids[a].active = 0;
+                    int next_size = asteroids[a].size - 1;
+                    spawn_particles(asteroids[a].pos, 15, (SDL_Color){255, 100, 255, 255});
+                    wave_asteroids_destroyed++;
+                    if (next_size >= 1) {
+                        spawn_asteroid(asteroids[a].pos, next_size);
+                        spawn_asteroid(asteroids[a].pos, next_size);
                     }
+                    score += 100;
                 }
             }
         }
@@ -1712,6 +1847,7 @@ void game_update(float delta_time) {
                     bullets[b].active = 0;
                 }
                 asteroids[a].active = 0;
+                wave_asteroids_destroyed++;
                 
                 int next_size = asteroids[a].size - 1;
                 int points_added = (asteroids[a].size == 3) ? 20 : ((asteroids[a].size == 2) ? 50 : 100);
@@ -1828,6 +1964,7 @@ void game_update(float delta_time) {
                     
                     // Destroy the asteroid
                     asteroids[a].active = 0;
+                    wave_asteroids_destroyed++;
                     int next_size = asteroids[a].size - 1;
                     spawn_particles(asteroids[a].pos, 15, (SDL_Color){255, 255, 255, 255});
                     if (next_size >= 1) {
@@ -1845,6 +1982,7 @@ void game_update(float delta_time) {
                 
                 // Destroy the asteroid too
                 asteroids[a].active = 0;
+                wave_asteroids_destroyed++;
                 int next_size = asteroids[a].size - 1;
                 if (next_size >= 1) {
                     spawn_asteroid(asteroids[a].pos, next_size);
@@ -1924,8 +2062,11 @@ void game_render() {
     SDL_Color main_color = {220, 240, 255, 255}; // Glowing cool white/light cyan phosphor
     
     // Apply Vectrex persistence effect
-    float glow_values[] = {0.0f, 0.70f, 0.85f, 0.92f, 0.96f};
+    float glow_values[] = {1.0f, 0.95f, 0.90f, 0.82f, 0.70f};
     vg_apply_persistence(glow_values[settings_glow]); // fades slightly each frame
+
+    // Set camera offset for world rendering
+    vg_set_camera(camera_pos);
     
     // --- Draw Particles ---
     for (int i = 0; i < MAX_PARTICLES; i++) {
@@ -1956,6 +2097,7 @@ void game_render() {
                 orb_lines[3] = (Line){{-2,2}, {-2,-2}};
             }
             Shape os = {orb_lines, 4, orb_col};
+            vg_draw_shape_trail(&os, orbs[i].trail_pos, orbs[i].trail_ang, PHOS_TRAIL_LEN, orbs[i].trail_head, 1.0f, 0.3f, 0.6f);
             vg_draw_shape(&os, orbs[i].pos, orbs[i].life * 5.0f, 1.0f);
         }
     }
@@ -1966,11 +2108,9 @@ void game_render() {
             Shape s;
             s.lines = asteroids[i].lines;
             s.line_count = asteroids[i].line_count;
-            // Color by size: large=cool blue-white, medium=warm orange, small=hot red
-            if (asteroids[i].size == 3) s.color = (SDL_Color){200, 220, 255, 255};
-            else if (asteroids[i].size == 2) s.color = (SDL_Color){255, 200, 130, 255};
-            else s.color = (SDL_Color){255, 130, 100, 255};
+            s.color = main_color;
             if (asteroids[i].has_shield) s.color = (SDL_Color){100, 255, 255, 255};
+            vg_draw_shape_trail(&s, asteroids[i].trail_pos, asteroids[i].trail_ang, PHOS_TRAIL_LEN, asteroids[i].trail_head, 1.0f, 0.5f, 0.8f);
             vg_draw_shape(&s, asteroids[i].pos, asteroids[i].angle, 1.0f);
         }
     }
@@ -1985,6 +2125,7 @@ void game_render() {
             Vec2 p2 = { (vx / len) * 4.0f, (vy / len) * 4.0f };
             Line l = {p1, p2};
             Shape s = {&l, 1, bullets[i].color};
+            vg_draw_shape_trail(&s, bullets[i].trail_pos, bullets[i].trail_ang, PHOS_TRAIL_LEN, bullets[i].trail_head, 1.0f, 0.7f, 0.9f);
             vg_draw_shape(&s, bullets[i].pos, 0.0f, 1.0f);
         }
     }
@@ -1998,6 +2139,7 @@ void game_render() {
             Vec2 p2 = { (vx / len) * 4.0f, (vy / len) * 4.0f };
             Line l = {p1, p2};
             Shape s = {&l, 1, ufo_bullets[i].color};
+            vg_draw_shape_trail(&s, ufo_bullets[i].trail_pos, ufo_bullets[i].trail_ang, PHOS_TRAIL_LEN, ufo_bullets[i].trail_head, 1.0f, 0.7f, 0.9f);
             vg_draw_shape(&s, ufo_bullets[i].pos, 0.0f, 1.0f);
         }
     }
@@ -2007,7 +2149,9 @@ void game_render() {
         s.lines = ufo.lines;
         s.line_count = ufo.line_count;
         s.color = (SDL_Color){255, 180, 180, 255};
-        vg_draw_shape(&s, ufo.pos, 0.0f, (ufo.size == 2) ? 1.0f : 0.5f);
+        float scale = (ufo.size == 2) ? 1.0f : 0.5f;
+        vg_draw_shape_trail(&s, ufo.trail_pos, ufo.trail_ang, PHOS_TRAIL_LEN, ufo.trail_head, scale, 0.4f, 0.75f);
+        vg_draw_shape(&s, ufo.pos, 0.0f, scale);
     }
 
     if (player_rift.active) {
@@ -2017,6 +2161,14 @@ void game_render() {
         rs.color = (SDL_Color){255, 50, 255, 255};
         vg_draw_shape(&rs, player_rift.pos, player_rift.angle1, player_rift.radius / 16.0f);
         vg_draw_shape(&rs, player_rift.pos, player_rift.angle2, (player_rift.radius / 16.0f) * 0.8f);
+    }
+    if (rift.active) {
+        Shape rs;
+        rs.lines = ufo_lines; 
+        rs.line_count = 10;
+        rs.color = (SDL_Color){180, 50, 255, 180};
+        vg_draw_shape(&rs, rift.pos, rift.angle1, rift.radius / 16.0f);
+        vg_draw_shape(&rs, rift.pos, rift.angle2, (rift.radius / 16.0f) * 0.8f);
     }
     
     for (int i = 0; i < 4; i++) {
@@ -2043,6 +2195,7 @@ void game_render() {
         if (player.invuln_timer > 0.0f) visible = ((int)(player.invuln_timer * 10) % 2 == 0);
         if (visible) {
             Shape s = {player.lines, player.line_count, main_color};
+            vg_draw_shape_trail(&s, player.trail_pos, player.trail_ang, PHOS_TRAIL_LEN, player.trail_head, 1.0f, 0.4f, 0.7f);
             vg_draw_shape(&s, player.pos, player.angle, 1.0f);
             if (is_thrusting) {
                 // Animated multi-segment thruster flame flicker
@@ -2074,6 +2227,23 @@ void game_render() {
             }
         }
     }
+
+    // Score pop floaters (drawn in world coordinates)
+    for (int i = 0; i < MAX_SCORE_FLOATS; i++) {
+        if (score_floats[i].active) {
+            float t = score_floats[i].life;
+            Uint8 alpha = (t > 0.8f) ? 255 : (Uint8)(t / 0.8f * 255);
+            SDL_Color fc = {255, 255, 100, alpha};
+            if (score_floats[i].value >= 200) fc = (SDL_Color){255, 150, 50, alpha};
+            if (score_floats[i].value >= 400) fc = (SDL_Color){255, 80, 80, alpha};
+            char temp_text[32];
+            sprintf(temp_text, "+%d", score_floats[i].value);
+            vf_draw_string_centered(temp_text, score_floats[i].x, score_floats[i].y, 14, fc);
+        }
+    }
+
+    // Reset camera offset to zero for HUD/UI rendering
+    vg_set_camera((Vec2){0.0f, 0.0f});
 
     // HUD
     char hud_text[64];
@@ -2119,18 +2289,7 @@ void game_render() {
         if (player_upgrades.resonance_cascade)   { vf_draw_string("RES", ix, iy, iw, ic); iy += 18.0f; }
     }
 
-    // Score pop floaters
-    for (int i = 0; i < MAX_SCORE_FLOATS; i++) {
-        if (score_floats[i].active) {
-            float t = score_floats[i].life;
-            Uint8 alpha = (t > 0.8f) ? 255 : (Uint8)(t / 0.8f * 255);
-            SDL_Color fc = {255, 255, 100, alpha};
-            if (score_floats[i].value >= 200) fc = (SDL_Color){255, 150, 50, alpha};
-            if (score_floats[i].value >= 400) fc = (SDL_Color){255, 80, 80, alpha};
-            sprintf(hud_text, "+%d", score_floats[i].value);
-            vf_draw_string_centered(hud_text, score_floats[i].x, score_floats[i].y, 14, fc);
-        }
-    }
+
 
     // Wave clear bonus message
     if (wave_clear_msg_timer > 0.0f) {

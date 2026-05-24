@@ -30,6 +30,9 @@ void vg_draw_shape_trail(Shape *shape, Vec2 *trail_pos, float *trail_angle,
                          int trail_len, int trail_head, float scale,
                          float base_alpha, float decay);
 
+// Set camera offset for drawing coordinates
+void vg_set_camera(Vec2 offset);
+
 // Apply persistence effect (the Vectrex glow/trail)
 void vg_apply_persistence(float fade_amount);
 

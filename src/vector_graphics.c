@@ -5,6 +5,11 @@
 static SDL_Renderer *vg_renderer = NULL;
 static SDL_Texture *persistence_tex = NULL;
 static int win_w, win_h;
+static Vec2 vg_camera_offset = {0.0f, 0.0f};
+
+void vg_set_camera(Vec2 offset) {
+    vg_camera_offset = offset;
+}
 
 void vg_init(SDL_Renderer *renderer, int width, int height) {
     vg_renderer = renderer;
@@ -39,10 +44,10 @@ void vg_draw_shape(Shape *shape, Vec2 pos, float angle, float scale) {
         Line l = shape->lines[i];
         
         // Transform points
-        float x1 = (l.p1.x * c - l.p1.y * s) * scale + pos.x;
-        float y1 = (l.p1.x * s + l.p1.y * c) * scale + pos.y;
-        float x2 = (l.p2.x * c - l.p2.y * s) * scale + pos.x;
-        float y2 = (l.p2.x * s + l.p2.y * c) * scale + pos.y;
+        float x1 = (l.p1.x * c - l.p1.y * s) * scale + pos.x - vg_camera_offset.x;
+        float y1 = (l.p1.x * s + l.p1.y * c) * scale + pos.y - vg_camera_offset.y;
+        float x2 = (l.p2.x * c - l.p2.y * s) * scale + pos.x - vg_camera_offset.x;
+        float y2 = (l.p2.x * s + l.p2.y * c) * scale + pos.y - vg_camera_offset.y;
 
         SDL_RenderDrawLine(vg_renderer, (int)x1, (int)y1, (int)x2, (int)y2);
         
@@ -63,8 +68,7 @@ void vg_draw_shape_trail(Shape *shape, Vec2 *trail_pos, float *trail_angle,
     SDL_SetRenderDrawBlendMode(vg_renderer, SDL_BLENDMODE_ADD);
 
     for (int step = 1; step < trail_len; step++) {
-        float t = (float)step / (float)(trail_len - 1);
-        float alpha = base_alpha * decay * (1.0f - t) * (1.0f - t);
+        float alpha = base_alpha * powf(decay, (float)step);
         if (alpha < 1.0f / 255.0f) break;
 
         int idx = (trail_head - step + trail_len * 256) % trail_len;
@@ -82,10 +86,10 @@ void vg_draw_shape_trail(Shape *shape, Vec2 *trail_pos, float *trail_angle,
 
         for (int i = 0; i < shape->line_count; i++) {
             Line l = shape->lines[i];
-            float x1 = (l.p1.x * c - l.p1.y * s) * scale + pos.x;
-            float y1 = (l.p1.x * s + l.p1.y * c) * scale + pos.y;
-            float x2 = (l.p2.x * c - l.p2.y * s) * scale + pos.x;
-            float y2 = (l.p2.x * s + l.p2.y * c) * scale + pos.y;
+            float x1 = (l.p1.x * c - l.p1.y * s) * scale + pos.x - vg_camera_offset.x;
+            float y1 = (l.p1.x * s + l.p1.y * c) * scale + pos.y - vg_camera_offset.y;
+            float x2 = (l.p2.x * c - l.p2.y * s) * scale + pos.x - vg_camera_offset.x;
+            float y2 = (l.p2.x * s + l.p2.y * c) * scale + pos.y - vg_camera_offset.y;
             SDL_RenderDrawLine(vg_renderer, (int)x1, (int)y1, (int)x2, (int)y2);
         }
     }

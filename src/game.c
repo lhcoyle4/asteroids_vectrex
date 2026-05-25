@@ -35,16 +35,7 @@ extern SDL_Window   *g_window;   /* defined in main.c */
 #include "state.h"
 #include "world_gen.h"
 
-int check_void_stone(void) {
-    if (lives <= 1 && res_void_stone > 0) {
-        res_void_stone--;
-        time_stop_frames = 30;
-        player.pos = player_pos_history[(pos_history_idx + POS_HISTORY_LEN - 100) % POS_HISTORY_LEN];
-        player.invuln_timer = 2.0f;
-        return 1;
-    }
-    return 0;
-}
+
 
 /* =========== FORWARD DECLARATIONS =========== */
 
@@ -65,6 +56,7 @@ static void load_game(void);
 
 /* Entity helpers */
 void spawn_particles(Vec2 pos, int count, SDL_Color color);
+
 static void reset_player(void);
 static int  get_zone(Vec2 pos);
 static void init_home_area(void);

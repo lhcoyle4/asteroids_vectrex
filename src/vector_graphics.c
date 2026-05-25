@@ -50,6 +50,9 @@ typedef struct {
 static PhosLine phos_lines[PHOS_TRAIL_LEN];
 static int phos_head = 0;
 
+static int shake_dx = 0;
+static int shake_dy = 0;
+
 /*
  * Screen-shake displacement applied during coordinate translation.
  * Kept in the module-state section so they are visible alongside the
@@ -455,8 +458,8 @@ void vg_clear(void)
  */
 void vg_set_shake(int dx, int dy)
 {
-    g_camera_offset_x = (float)dx;
-    g_camera_offset_y = (float)dy;
+    shake_dx = dx;
+    shake_dy = dy;
 }
 
 /* ====== PRESENTATION ====== */

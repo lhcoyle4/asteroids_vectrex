@@ -7,17 +7,20 @@ echo ============================================================
 echo  Working directory: %CD%
 echo.
 
-:: ── 1. Clean ──────────────────────────────────────────────
+:: ── 1. Kill running instance + clean ─────────────────────
+taskkill /f /im permadrift.exe >nul 2>nul
+timeout /t 1 /nobreak >nul
 if exist permadrift.exe ( del permadrift.exe )
 del /q /f src\*.o src\*.wasm.o 2>nul
 
 :: ── 2. Build Windows exe ──────────────────────────────────
 echo [1/2] Building Windows executable...
 make 2>&1
+set MAKE_ERR=%errorlevel%
 echo.
 
-if not exist permadrift.exe (
-    echo BUILD FAILED - exe not produced. Aborting.
+if %MAKE_ERR% NEQ 0 (
+    echo BUILD FAILED - make returned error %MAKE_ERR%. Aborting.
     exit /b 1
 )
 echo BUILD SUCCESS - permadrift.exe ready

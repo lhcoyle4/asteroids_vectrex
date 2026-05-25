@@ -294,6 +294,7 @@ static int settings_crosshair_style = 1; // 0=OFF 1=CROSS 2=DOT
 static int settings_autofire = 0;
 static int settings_controller_deadzone = 1; // 0=LOW 1=MED 2=HIGH
 static int settings_invert_y = 0;
+static int settings_control_scheme = 0; // 0=ARCADE  1=TWIN_STICK
 
 // FPS counter
 static float fps_accum = 0.0f;
@@ -303,12 +304,50 @@ static int fps_display_val = 0;
 // Controller
 static SDL_GameController *g_controller = NULL;
 
-// Keybinds
-typedef enum { KB_ROTATE_LEFT=0, KB_ROTATE_RIGHT, KB_THRUST, KB_FIRE, KB_PAUSE, KB_HYPERSPACE, KB_COUNT } KeyAction;
-static SDL_Scancode keybinds[KB_COUNT] = { SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_UP, SDL_SCANCODE_SPACE, SDL_SCANCODE_ESCAPE, SDL_SCANCODE_RETURN };
-static const char* kb_action_names[KB_COUNT] = { "ROTATE LEFT", "ROTATE RIGHT", "THRUST", "FIRE", "PAUSE", "HYPERSPACE" };
+// Keyboard binds
+typedef enum {
+    KB_ROTATE_LEFT=0, KB_ROTATE_RIGHT, KB_THRUST, KB_FIRE,
+    KB_PAUSE, KB_HYPERSPACE,
+    KB_ABILITY1, KB_ABILITY2, KB_ABILITY3, KB_ABILITY4,
+    KB_COUNT
+} KeyAction;
+static SDL_Scancode keybinds[KB_COUNT] = {
+    SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_UP, SDL_SCANCODE_SPACE,
+    SDL_SCANCODE_ESCAPE, SDL_SCANCODE_RETURN,
+    SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_4
+};
+static const char* kb_action_names[KB_COUNT] = {
+    "ROTATE LEFT", "ROTATE RIGHT", "THRUST", "FIRE",
+    "PAUSE", "HYPERSPACE",
+    "ABILITY 1", "ABILITY 2", "ABILITY 3", "ABILITY 4"
+};
 static int rebinding_action = -1; // -1 = not rebinding
 static int keybind_selection = 0;
+static int keybind_page = 0; // 0=keyboard  1=controller
+
+// Controller button binds
+typedef enum {
+    CT_THRUST=0, CT_FIRE, CT_HYPERSPACE,
+    CT_ABILITY1, CT_ABILITY2, CT_ABILITY3, CT_ABILITY4,
+    CT_COUNT
+} CtrlAction;
+static SDL_GameControllerButton ctrl_binds[CT_COUNT] = {
+    SDL_CONTROLLER_BUTTON_A,            // THRUST
+    SDL_CONTROLLER_BUTTON_X,            // FIRE
+    SDL_CONTROLLER_BUTTON_Y,            // HYPERSPACE
+    SDL_CONTROLLER_BUTTON_B,            // ABILITY 1
+    SDL_CONTROLLER_BUTTON_LEFTSHOULDER, // ABILITY 2
+    SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,// ABILITY 3
+    SDL_CONTROLLER_BUTTON_MAX           // ABILITY 4 (unbound)
+};
+static const char* ct_action_names[CT_COUNT] = {
+    "THRUST", "FIRE", "HYPERSPACE", "ABILITY 1", "ABILITY 2", "ABILITY 3", "ABILITY 4"
+};
+static int ctrl_rebinding_action = -1;
+
+// Twin-stick fire direction override
+static float twin_stick_fire_angle = 0.0f;
+static int   twin_stick_fire_active = 0;
 
 static float god_mode_msg_timer = 0.0f;
 static int is_attract_ai = 0;
@@ -1026,7 +1065,7 @@ void game_handle_input(SDL_Event *event) {
             if (btn == SDL_CONTROLLER_BUTTON_B) { SDL_Event qe; qe.type = SDL_QUIT; SDL_PushEvent(&qe); }
         } else if (game_state == STATE_PLAYING) {
             if (btn == SDL_CONTROLLER_BUTTON_START) game_set_paused(1);
-            if (btn == SDL_CONTROLLER_BUTTON_Y) trigger_hyperspace();
+            if (btn == ctrl_binds[CT_HYPERSPACE]) trigger_hyperspace();
         } else if (game_state == STATE_PAUSED) {
             if (btn == SDL_CONTROLLER_BUTTON_START || btn == SDL_CONTROLLER_BUTTON_B) game_set_paused(0);
         } else if (game_state == STATE_SETTINGS) {
@@ -1036,7 +1075,15 @@ void game_handle_input(SDL_Event *event) {
             if (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) settings_tab = (settings_tab + 1) % 4;
             if (btn == SDL_CONTROLLER_BUTTON_B || btn == SDL_CONTROLLER_BUTTON_START) { game_state = STATE_TITLE; menu_selection = 0; }
         } else if (game_state == STATE_KEYBINDS) {
-            if (btn == SDL_CONTROLLER_BUTTON_B) { game_state = STATE_SETTINGS; menu_selection = 0; }
+            if (ctrl_rebinding_action >= 0) {
+                // Assign this button to the action (don't allow START/BACK to avoid trapping)
+                if (btn != SDL_CONTROLLER_BUTTON_START && btn != SDL_CONTROLLER_BUTTON_BACK) {
+                    ctrl_binds[ctrl_rebinding_action] = btn;
+                }
+                ctrl_rebinding_action = -1;
+            } else {
+                if (btn == SDL_CONTROLLER_BUTTON_B) { game_state = STATE_SETTINGS; menu_selection = 0; }
+            }
         } else if (game_state == STATE_GAMEOVER) {
             if (btn == SDL_CONTROLLER_BUTTON_A || btn == SDL_CONTROLLER_BUTTON_START) {
                 int is_hs = 0;
@@ -1105,28 +1152,32 @@ void game_handle_input(SDL_Event *event) {
             }
         } else if (game_state == STATE_KEYBINDS) {
             if (rebinding_action >= 0) {
-                // Any key press assigns it
+                // Any key press assigns it (keyboard page)
                 SDL_Scancode sc = event->key.keysym.scancode;
-                if (sc != SDL_SCANCODE_ESCAPE) {
-                    keybinds[rebinding_action] = sc;
-                }
+                if (sc != SDL_SCANCODE_ESCAPE) keybinds[rebinding_action] = sc;
                 rebinding_action = -1;
             } else {
+                int page_count = (keybind_page == 0) ? KB_COUNT : CT_COUNT;
                 if (event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w)
-                    keybind_selection = (keybind_selection + KB_COUNT - 1) % KB_COUNT;
+                    keybind_selection = (keybind_selection + page_count - 1) % page_count;
                 if (event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s)
-                    keybind_selection = (keybind_selection + 1) % KB_COUNT;
-                if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE)
-                    rebinding_action = keybind_selection;
+                    keybind_selection = (keybind_selection + 1) % page_count;
+                if (event->key.keysym.sym == SDLK_q || event->key.keysym.sym == SDLK_e)
+                    { keybind_page = 1 - keybind_page; keybind_selection = 0; rebinding_action = -1; ctrl_rebinding_action = -1; }
+                if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) {
+                    if (keybind_page == 0) rebinding_action = keybind_selection;
+                    // controller rebinding happens via controller button event
+                    else ctrl_rebinding_action = keybind_selection;
+                }
                 if (event->key.keysym.sym == SDLK_ESCAPE)
-                    { game_state = STATE_SETTINGS; menu_selection = 0; settings_tab = 3; rebinding_action = -1; }
+                    { game_state = STATE_SETTINGS; menu_selection = 0; settings_tab = 3; rebinding_action = -1; ctrl_rebinding_action = -1; }
             }
         } else if (game_state == STATE_SETTINGS) {
             // Tab switching with Q/E
             if (event->key.keysym.sym == SDLK_q) { settings_tab = (settings_tab + 3) % 4; menu_selection = 0; }
             if (event->key.keysym.sym == SDLK_e) { settings_tab = (settings_tab + 1) % 4; menu_selection = 0; }
 
-            int tab_item_count[] = {4, 3, 3, 4}; // items per tab
+            int tab_item_count[] = {4, 3, 3, 5}; // items per tab (CONTROLS tab now has 5)
             int n = tab_item_count[settings_tab];
             if (event->key.keysym.sym == SDLK_UP   || event->key.keysym.sym == SDLK_w) menu_selection = (menu_selection + n - 1) % n;
             if (event->key.keysym.sym == SDLK_DOWN  || event->key.keysym.sym == SDLK_s) menu_selection = (menu_selection + 1) % n;
@@ -1174,8 +1225,10 @@ void game_handle_input(SDL_Event *event) {
                 } else if (menu_selection == 2) { // Controller deadzone
                     if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) settings_controller_deadzone = (settings_controller_deadzone + 2) % 3;
                     if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_controller_deadzone = (settings_controller_deadzone + 1) % 3;
-                } else if (menu_selection == 3) { // Keybinds
-                    if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) { game_state = STATE_KEYBINDS; keybind_selection = 0; rebinding_action = -1; }
+                } else if (menu_selection == 3) { // Control scheme
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_control_scheme = !settings_control_scheme;
+                } else if (menu_selection == 4) { // Keybinds
+                    if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) { game_state = STATE_KEYBINDS; keybind_selection = 0; keybind_page = 0; rebinding_action = -1; ctrl_rebinding_action = -1; }
                 }
             }
             if (event->key.keysym.sym == SDLK_ESCAPE) { game_state = STATE_TITLE; menu_selection = 0; }
@@ -1530,16 +1583,44 @@ void game_update(float delta_time) {
                 player.angle += ROTATION_SPEED * delta_time;
             }
 
-            // Controller left-stick rotation
+            // Controller input
             if (g_controller) {
-                int16_t lx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTX);
                 float deadzone = (float[]){0.1f, 0.2f, 0.35f}[settings_controller_deadzone] * 32767.0f;
-                if (fabsf((float)lx) > deadzone)
-                    player.angle += ((float)lx / 32767.0f) * ROTATION_SPEED * delta_time * 2.5f;
                 int16_t lt = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
                 int16_t rt = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
-                if (lt > 8000 || SDL_GameControllerGetButton(g_controller, SDL_CONTROLLER_BUTTON_A)) thrust_key_down = 1;
-                if (rt > 8000 || SDL_GameControllerGetButton(g_controller, SDL_CONTROLLER_BUTTON_X)) fire_key_down = 1;
+
+                if (settings_control_scheme == 0) {
+                    // ARCADE: left stick X = rotate
+                    int16_t lx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTX);
+                    if (fabsf((float)lx) > deadzone)
+                        player.angle += ((float)lx / 32767.0f) * ROTATION_SPEED * delta_time * 2.5f;
+                    // LT = thrust, RT = fire (triggers)
+                    if (lt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_THRUST])) thrust_key_down = 1;
+                    if (rt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_FIRE]))   fire_key_down = 1;
+                    twin_stick_fire_active = 0;
+                } else {
+                    // TWIN_STICK: left stick X/Y = rotate + forward thrust
+                    int16_t lx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTY);
+                    if (fabsf((float)lx) > deadzone)
+                        player.angle += ((float)lx / 32767.0f) * ROTATION_SPEED * delta_time * 4.0f;
+                    // Push forward on left stick (ly negative = up) = thrust
+                    if ((float)-ly > deadzone * 1.2f) thrust_key_down = 1;
+                    // Right stick: aim direction + auto-fire
+                    int16_t rx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_RIGHTX);
+                    int16_t ry = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_RIGHTY);
+                    float rmag = sqrtf((float)rx*(float)rx + (float)ry*(float)ry);
+                    if (rmag > deadzone * 1.2f) {
+                        twin_stick_fire_angle  = atan2f((float)rx, -(float)ry);
+                        twin_stick_fire_active = 1;
+                        fire_key_down = 1; // auto-fire when right stick is pushed
+                    } else {
+                        twin_stick_fire_active = 0;
+                    }
+                    // LT still works as thrust, RT as fire
+                    if (lt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_THRUST])) thrust_key_down = 1;
+                    if (rt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_FIRE]))   fire_key_down = 1;
+                }
             }
 
             int mx, my;
@@ -1624,6 +1705,8 @@ void game_update(float delta_time) {
         if (fire_key_down && fire_cooldown_timer <= 0.0f) {
             int bullets_to_fire = player_upgrades.triple_shot ? 3 : 1;
             float spread = 0.25f;
+            // In twin-stick mode, bullets travel in right-stick direction
+            float base_fire_angle = twin_stick_fire_active ? twin_stick_fire_angle : player.angle;
 
             for (int b = 0; b < bullets_to_fire; b++) {
                 // Look for empty bullet slot
@@ -1633,8 +1716,8 @@ void game_update(float delta_time) {
                         bullets[i].life = BULLET_LIFE;
                         bullets[i].bounces = 0;
                         bullets[i].pierces = 0;
-                        
-                        float angle = player.angle;
+
+                        float angle = base_fire_angle;
                         if (bullets_to_fire == 3) {
                             angle += (b - 1) * spread;
                         }
@@ -1672,9 +1755,9 @@ void game_update(float delta_time) {
                         bullets[i].life = BULLET_LIFE;
                         bullets[i].bounces = 0;
                         bullets[i].pierces = 0;
-                        float rear_angle = player.angle + 3.14159265f;
-                        float rear_x = player.pos.x - sinf(player.angle) * 12.0f;
-                        float rear_y = player.pos.y + cosf(player.angle) * 12.0f;
+                        float rear_angle = base_fire_angle + 3.14159265f;
+                        float rear_x = player.pos.x - sinf(base_fire_angle) * 12.0f;
+                        float rear_y = player.pos.y + cosf(base_fire_angle) * 12.0f;
                         bullets[i].pos = (Vec2){rear_x, rear_y};
                         bullets[i].trail_head = 0;
                         for (int t = 0; t < PHOS_TRAIL_LEN; t++) { bullets[i].trail_pos[t] = bullets[i].pos; bullets[i].trail_ang[t] = 0.0f; }
@@ -2529,47 +2612,71 @@ void game_render() {
     // Reset camera offset to zero for HUD/UI rendering
     vg_set_camera((Vec2){0.0f, 0.0f});
 
-    // HUD
+    // ── HUD ──────────────────────────────────────────────────────────
     char hud_text[64];
-    sprintf(hud_text, "%05d", score); vf_draw_string(hud_text, 40, 25, 20, main_color);
-    // Combo display
+    // Score (top-left, pushed down slightly from screen edge)
+    sprintf(hud_text, "%05d", score);
+    vf_draw_string(hud_text, 42, 30, 20, main_color);
+    // Top score (top-center, same baseline)
+    sprintf(hud_text, "%05d", high_scores[0].score > score ? high_scores[0].score : score);
+    vf_draw_string_centered(hud_text, SCREEN_WIDTH/2.0f, 30, 15, (SDL_Color){180, 220, 255, 180});
+    // Player level (top-right)
+    sprintf(hud_text, "LVL %d", player_level);
+    { float tw = (strlen(hud_text) * 14 * 1.2f) - (14 * 0.2f);
+      vf_draw_string(hud_text, SCREEN_WIDTH - 42 - tw, 30, 14, (SDL_Color){120, 200, 255, 200}); }
+
+    // Combo display (center, clear of lives below)
     if (combo_count >= 2) {
         SDL_Color cc = (combo_count >= 4) ? (SDL_Color){255, 80, 80, 255} : (SDL_Color){255, 200, 50, 255};
         sprintf(hud_text, "x%d COMBO!", combo_count);
-        vf_draw_string_centered(hud_text, SCREEN_WIDTH / 2.0f, 65, 18, cc);
+        vf_draw_string_centered(hud_text, SCREEN_WIDTH / 2.0f, 68, 18, cc);
     }
-    // XP bar (flashes on fill)
+    // Lives icons — moved down so they clear the combo text (combo bottom ≈ y+18 = 86)
+    for (int i = 0; i < lives - 1; i++) {
+        Shape s = {ship_lines, sizeof(ship_lines)/sizeof(Line), main_color};
+        Vec2 pos = { 50.0f + i * 26.0f, 108.0f };
+        vg_draw_shape(&s, pos, 0.0f, 0.7f);
+    }
+
+    // ── XP bar (bottom, with breathing room from screen edge) ────────
     float xp_percent = (float)player_xp / xp_threshold;
     SDL_Color xp_col = (xp_flash_timer > 0.0f && ((int)(xp_flash_timer * 20) % 2 == 0))
         ? (SDL_Color){255, 255, 255, 255} : (SDL_Color){100, 255, 100, 255};
-    Vec2 xp_p1 = {40, SCREEN_HEIGHT - 20}, xp_p2 = {40 + (SCREEN_WIDTH - 80) * xp_percent, SCREEN_HEIGHT - 20};
-    Line xp_l = {xp_p1, xp_p2}; Shape xp_s = {&xp_l, 1, xp_col}; vg_draw_shape(&xp_s, (Vec2){0,0}, 0.0f, 1.0f);
-    // XP bar track
-    Vec2 b_p1 = {40, SCREEN_HEIGHT - 22}, b_p2 = {SCREEN_WIDTH - 40, SCREEN_HEIGHT - 22};
-    Line b_l1 = {b_p1, b_p2}; Shape b_s1 = {&b_l1, 1, (SDL_Color){50, 50, 50, 255}}; vg_draw_shape(&b_s1, (Vec2){0,0}, 0.0f, 1.0f);
-    // XP label
-    sprintf(hud_text, "CHR"); vf_draw_string(hud_text, SCREEN_WIDTH - 70, SCREEN_HEIGHT - 28, 10, (SDL_Color){80, 180, 80, 255});
-    // Top score
-    sprintf(hud_text, "%05d", high_scores[0].score > score ? high_scores[0].score : score);
-    vf_draw_string_centered(hud_text, SCREEN_WIDTH/2.0f, 25, 15, (SDL_Color){180, 220, 255, 180});
-    // Lives icons
-    for (int i = 0; i < lives - 1; i++) { Shape s = {ship_lines, sizeof(ship_lines)/sizeof(Line), main_color}; Vec2 pos = { 50.0f + i * 25.0f, 85.0f }; vg_draw_shape(&s, pos, 0.0f, 0.75f); }
+    float xp_bar_y = (float)(SCREEN_HEIGHT - 22);
+    float xp_bar_x0 = 40.0f, xp_bar_x1 = (float)(SCREEN_WIDTH - 40);
+    // Track (dim)
+    { Vec2 p1 = {xp_bar_x0, xp_bar_y}, p2 = {xp_bar_x1, xp_bar_y};
+      Line l = {p1, p2}; Shape s = {&l, 1, (SDL_Color){50,50,50,255}};
+      vg_draw_shape(&s, (Vec2){0,0}, 0.0f, 1.0f); }
+    // Fill
+    { Vec2 p1 = {xp_bar_x0, xp_bar_y}, p2 = {xp_bar_x0 + (xp_bar_x1 - xp_bar_x0) * xp_percent, xp_bar_y};
+      Line l = {p1, p2}; Shape s = {&l, 1, xp_col};
+      vg_draw_shape(&s, (Vec2){0,0}, 0.0f, 1.0f); }
+    // Labels above the bar — left: "XP"  right: current/threshold
+    vf_draw_string("XP", xp_bar_x0, xp_bar_y - 16.0f, 11, (SDL_Color){80, 180, 80, 200});
+    sprintf(hud_text, "%d / %d", player_xp, xp_threshold);
+    { float tw = (strlen(hud_text) * 10 * 1.2f) - (10 * 0.2f);
+      vf_draw_string(hud_text, xp_bar_x1 - tw, xp_bar_y - 15.0f, 10, (SDL_Color){80, 180, 80, 180}); }
 
     // Upgrade icon strip (right side of screen, abbreviated)
+    // Starts below the player level label (y≈50) and stops well above the XP bar (y≈870)
     if (game_state == STATE_PLAYING || game_state == STATE_ATTRACT_GAMEPLAY) {
-        float ix = SCREEN_WIDTH - 70.0f, iy = 120.0f;
+        float ix = SCREEN_WIDTH - 72.0f, iy = 140.0f;
         SDL_Color ic = {100, 220, 255, 180};
         int iw = 10;
-        if (player_upgrades.triple_shot)         { vf_draw_string("3X", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.max_bounces > 0)     { vf_draw_string("BNC", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.shield_active)       { vf_draw_string("SHD", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.piercing)            { vf_draw_string("PRC", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.homing)              { vf_draw_string("HOM", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.rear_gun)            { vf_draw_string("RRG", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.thermal_hull)        { vf_draw_string("RAM", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.singularity_displacer){ vf_draw_string("WRP", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.split_shot)          { vf_draw_string("SPL", ix, iy, iw, ic); iy += 18.0f; }
-        if (player_upgrades.resonance_cascade)   { vf_draw_string("RES", ix, iy, iw, ic); iy += 18.0f; }
+        if (player_upgrades.triple_shot)          { vf_draw_string("3X",  ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.max_bounces > 0)      { vf_draw_string("BNC", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.shield_active)        { vf_draw_string("SHD", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.piercing)             { vf_draw_string("PRC", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.homing)               { vf_draw_string("HOM", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.rear_gun)             { vf_draw_string("RRG", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.thermal_hull)         { vf_draw_string("RAM", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.singularity_displacer){ vf_draw_string("WRP", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.split_shot)           { vf_draw_string("SPL", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.resonance_cascade)    { vf_draw_string("RES", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.mirror_image)         { vf_draw_string("TWN", ix, iy, iw, ic); iy += 20.0f; }
+        if (player_upgrades.phase_shift)          { vf_draw_string("PHS", ix, iy, iw, (SDL_Color){255,200,100,180}); iy += 20.0f; }
+        if (player_upgrades.singularity_whip)     { vf_draw_string("BWP", ix, iy, iw, ic); iy += 20.0f; }
     }
 
 
@@ -2616,11 +2723,46 @@ void game_render() {
         { float tw = (strlen("SETTINGS") * 22 * 1.2f) - (22 * 0.2f);
           if (menu_selection == 2) vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, SCREEN_HEIGHT/2.0f + 150, 22, c3); }
     } else if (game_state == STATE_PAUSED) {
-        vf_draw_string_centered("PAUSED", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 120, 45, (SDL_Color){255, 255, 255, 255});
-        vf_draw_string_centered("S: SAVE GAME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 20, 22, main_color);
-        vf_draw_string_centered("L: LOAD GAME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 30, 22, main_color);
-        vf_draw_string_centered("Q: QUIT TO MENU", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 80, 22, main_color);
-        vf_draw_string_centered("PRESS ESC TO RESUME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 160, 16, (SDL_Color){180, 180, 180, 255});
+        vf_draw_string_centered("PAUSED", SCREEN_WIDTH/2.0f, 70, 38, (SDL_Color){255, 255, 255, 255});
+        vf_draw_string_centered("S: SAVE   L: LOAD   Q: QUIT", SCREEN_WIDTH/2.0f, 130, 16, main_color);
+        vf_draw_string_centered("ESC TO RESUME", SCREEN_WIDTH/2.0f, 165, 13, (SDL_Color){150, 150, 180, 255});
+
+        // ── Relic Log ─────────────────────────────────────────────────────
+        // Map active upgrades to name+description pairs
+        typedef struct { const char* name; const char* desc; } RelicEntry;
+        RelicEntry relics[30]; int relic_count = 0;
+        #define ADD_RELIC(up, nm, dc) if(up){ relics[relic_count].name=(nm); relics[relic_count].desc=(dc); relic_count++; }
+        ADD_RELIC(player_upgrades.triple_shot,            "TRISKELION BURST",  "Three bolts spread from prow  [ fires with FIRE key ]")
+        ADD_RELIC(player_upgrades.max_bounces > 0,        "VOID RICOCHET",     "Bolts rebound off void edge   [ passive ]")
+        ADD_RELIC(player_upgrades.shield_active,          "ETHER SHROUD",      "Absorbs one asteroid hit      [ passive ]")
+        ADD_RELIC(player_upgrades.piercing,               "ICHOROUS ROUNDS",   "Bolts pierce through enemies  [ passive ]")
+        ADD_RELIC(player_upgrades.homing,                 "SEEKER ICHORS",     "Bolts home to nearest stone   [ passive ]")
+        ADD_RELIC(player_upgrades.rear_gun,               "AFT CANNON",        "Fires bolt from the aft too   [ fires with FIRE key ]")
+        ADD_RELIC(player_upgrades.split_shot,             "FISSION SHOT",      "Bolts split on first impact   [ passive ]")
+        ADD_RELIC(player_upgrades.mirror_image,           "WRAITH TWIN",       "Phantom twin orbits behind    [ passive ]")
+        ADD_RELIC(player_upgrades.phase_shift,            "PHASE SHIFT",       "Pass through one killing blow [ passive, one-time ]")
+        ADD_RELIC(player_upgrades.thermal_hull,           "THERMAL HULL",      "Ram at speed to destroy stone [ THRUST into enemy ]")
+        ADD_RELIC(player_upgrades.singularity_displacer,  "RIFT DISPLACER",    "Double-tap THRUST to rift-jump [ tap THRUST twice ]")
+        ADD_RELIC(player_upgrades.singularity_whip,       "BANE WHIP",         "Thrust trail scorches drift   [ hold THRUST ]")
+        ADD_RELIC(player_upgrades.resonance_cascade,      "RESONANCE CASCADE", "Bolts unleash shockwaves      [ fires with FIRE key ]")
+        #undef ADD_RELIC
+        if (relic_count > 0) {
+            vf_draw_string_centered("YOUR RELICS", SCREEN_WIDTH/2.0f, 210, 15, (SDL_Color){180, 255, 200, 180});
+            float ry = 238.0f;
+            float row_h = (float)(SCREEN_HEIGHT - 290) / (relic_count < 12 ? relic_count : 12);
+            if (row_h > 52.0f) row_h = 52.0f;
+            int shown = relic_count < 12 ? relic_count : 12;
+            for (int i = 0; i < shown; i++) {
+                SDL_Color nc = {100, 220, 255, 220};
+                SDL_Color dc = {160, 160, 160, 200};
+                char nbuf[48]; sprintf(nbuf, "%-20s", relics[i].name);
+                vf_draw_string_centered(nbuf, SCREEN_WIDTH/2.0f - 60.0f, ry, 12, nc);
+                vf_draw_string_centered(relics[i].desc, SCREEN_WIDTH/2.0f + 50.0f, ry, 10, dc);
+                ry += row_h;
+            }
+        } else {
+            vf_draw_string_centered("NO RELICS EQUIPPED YET", SCREEN_WIDTH/2.0f, 220, 14, (SDL_Color){120,120,120,180});
+        }
     } else if (game_state == STATE_SETTINGS) {
         const char* tab_names[] = {"VIDEO", "AUDIO", "GAMEPLAY", "CONTROLS"};
         // Draw tab headers
@@ -2686,16 +2828,18 @@ void game_render() {
                 }
             }
         } else if (settings_tab == 3) { // CONTROLS
-            char b0[64], b1[64], b2[64], b3[64];
+            const char* scheme_names[] = {"ARCADE", "TWIN-STICK"};
+            char b0[64], b1[64], b2[64], b3[64], b4[64];
             sprintf(b0, "MOUSE AIM:  < %s >", on_off[settings_mouse_aim]);
             sprintf(b1, "CROSSHAIR:  < %s >", ch_names[settings_crosshair_style]);
             sprintf(b2, "CONTROLLER DEADZONE:  < %s >", dz_names[settings_controller_deadzone]);
-            sprintf(b3, "KEYBINDS  >");
-            const char* items[] = {b0, b1, b2, b3};
-            for (int i = 0; i < 4; i++) {
+            sprintf(b3, "CONTROL SCHEME:  < %s >", scheme_names[settings_control_scheme]);
+            sprintf(b4, "KEYBINDS  >");
+            const char* items[] = {b0, b1, b2, b3, b4};
+            for (int i = 0; i < 5; i++) {
                 SDL_Color ic = (menu_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
                 vf_draw_string_centered(items[i], SCREEN_WIDTH/2.0f, base_y + i*step, 18, ic);
-                if (menu_selection == i && i < 3) {
+                if (menu_selection == i && i < 4) {
                     float tw = (strlen(items[i]) * 18 * 1.2f) - (18 * 0.2f);
                     vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 35.0f, base_y + i*step, 18, ic);
                 }
@@ -2705,22 +2849,60 @@ void game_render() {
             }
         }
     } else if (game_state == STATE_KEYBINDS) {
-        vf_draw_string_centered("KEYBINDS", SCREEN_WIDTH/2.0f, 60, 28, (SDL_Color){150,150,255,255});
+        // Tab headers
+        SDL_Color kb_tc = (keybind_page == 0) ? (SDL_Color){255,255,80,255} : (SDL_Color){100,100,160,255};
+        SDL_Color ct_tc = (keybind_page == 1) ? (SDL_Color){255,255,80,255} : (SDL_Color){100,100,160,255};
+        vf_draw_string_centered("KEYBINDS", SCREEN_WIDTH/2.0f, 35, 22, (SDL_Color){150,150,255,255});
+        vf_draw_string("KEYBOARD", SCREEN_WIDTH/2.0f - 200.0f, 70, 16, kb_tc);
+        vf_draw_string("CONTROLLER", SCREEN_WIDTH/2.0f + 40.0f, 70, 16, ct_tc);
+        vf_draw_string_centered("Q / E   TO   SWITCH   PAGES", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 60, 11, (SDL_Color){100,100,120,255});
+        vf_draw_string_centered("ESC TO RETURN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 38, 11, (SDL_Color){100,100,120,255});
+
         if (rebinding_action >= 0) {
             vf_draw_string_centered("PRESS ANY KEY", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 20, 28, (SDL_Color){255,200,80,255});
             vf_draw_string_centered("ESC TO CANCEL", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 30, 16, (SDL_Color){150,150,150,255});
-        } else {
-            vf_draw_string_centered("ENTER TO REBIND    ESC TO RETURN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 60, 12, (SDL_Color){100,100,120,255});
+        } else if (ctrl_rebinding_action >= 0) {
+            vf_draw_string_centered("PRESS CONTROLLER BUTTON", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 20, 24, (SDL_Color){255,180,50,255});
+            vf_draw_string_centered("START/BACK RESERVED   ESC TO CANCEL", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 30, 14, (SDL_Color){150,150,150,255});
+        } else if (keybind_page == 0) {
+            // Keyboard binds
+            vf_draw_string_centered("ENTER TO REBIND", SCREEN_WIDTH/2.0f, 100, 12, (SDL_Color){100,100,120,255});
+            float kb_row_h = (float)(SCREEN_HEIGHT - 160) / KB_COUNT;
+            if (kb_row_h > 44.0f) kb_row_h = 44.0f;
             for (int i = 0; i < KB_COUNT; i++) {
                 SDL_Color ic = (keybind_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
                 const char* kname = SDL_GetScancodeName(keybinds[i]);
-                char row[64]; sprintf(row, "%-14s   %s", kb_action_names[i], kname);
-                float y = 130.0f + i * 50.0f;
+                char row[64]; sprintf(row, "%-12s  %s", kb_action_names[i], kname);
+                float y = 120.0f + i * kb_row_h;
                 vf_draw_string_centered(row, SCREEN_WIDTH/2.0f, y, 16, ic);
                 if (keybind_selection == i) {
                     float tw = (strlen(row) * 16 * 1.2f) - (16*0.2f);
                     vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 30.0f, y, 16, ic);
                 }
+            }
+        } else {
+            // Controller binds
+            static const char* btn_names[] = {
+                "A","B","X","Y","BACK","GUIDE","START","LSTICK","RSTICK",
+                "LB","RB","DPAD_UP","DPAD_DOWN","DPAD_LEFT","DPAD_RIGHT","MISC"
+            };
+            vf_draw_string_centered("ENTER TO REBIND", SCREEN_WIDTH/2.0f, 100, 12, (SDL_Color){100,100,120,255});
+            float ct_row_h = (float)(SCREEN_HEIGHT - 160) / CT_COUNT;
+            if (ct_row_h > 44.0f) ct_row_h = 44.0f;
+            for (int i = 0; i < CT_COUNT; i++) {
+                SDL_Color ic = (keybind_selection == i) ? (SDL_Color){255,180,50,255} : main_color;
+                int bval = (int)ctrl_binds[i];
+                const char* bname = (bval >= 0 && bval < 16) ? btn_names[bval] : "---";
+                char row[64]; sprintf(row, "%-12s  %s", ct_action_names[i], bname);
+                float y = 120.0f + i * ct_row_h;
+                vf_draw_string_centered(row, SCREEN_WIDTH/2.0f, y, 16, ic);
+                if (keybind_selection == i) {
+                    float tw = (strlen(row) * 16 * 1.2f) - (16*0.2f);
+                    vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 30.0f, y, 16, ic);
+                }
+            }
+            if (!g_controller) {
+                vf_draw_string_centered("NO CONTROLLER DETECTED", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 90, 14, (SDL_Color){255,80,80,180});
             }
         }
     } else if (game_state == STATE_HIGHSCORES) {

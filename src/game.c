@@ -298,9 +298,7 @@ typedef struct { float x, y, vy; int value; float life; int active; } ScoreFloat
 #define MAX_SCORE_FLOATS 24
 static ScoreFloat score_floats[MAX_SCORE_FLOATS];
 
-// Wave clear bonus
-static float wave_clear_msg_timer = 0.0f;
-static int wave_clear_bonus = 0;
+
 
 // XP bar flash
 static float xp_flash_timer = 0.0f;
@@ -601,9 +599,7 @@ static float distance_sq(Vec2 p1, Vec2 p2) {
     return dx*dx + dy*dy;
 }
 
-static int get_target_asteroids() {
-    return 10 + level * 2;
-}
+
 
 static void spawn_particles(Vec2 pos, int count, SDL_Color color) {
     int spawned = 0;
@@ -788,6 +784,8 @@ static void spawn_orb(Vec2 pos, int value) {
 }
 
 static void spawn_upgrade_options() {
+    audio_stop(SFX_THRUST);
+    audio_stop(SFX_UFO_LOOP);
     UpgradeType all_upgrades[30];
     for (int i = 0; i < 30; i++) all_upgrades[i] = (UpgradeType)i;
     int total_available = 30;
@@ -894,7 +892,6 @@ static void start_new_game() {
     for (int i = 0; i < MAX_ORBS; i++) orbs[i].active = 0;
     for (int i = 0; i < MAX_SCORE_FLOATS; i++) score_floats[i].active = 0;
     combo_count = 0; combo_timer = 0.0f;
-    wave_clear_msg_timer = 0.0f;
     ufo.active = 0;
     wave_asteroids_destroyed = 0;
     wave_cleared_pending = 0;
@@ -955,8 +952,12 @@ void game_set_paused(int paused) {
     if (game_state == STATE_PLAYING && paused) {
         game_state = STATE_PAUSED;
         audio_stop(SFX_THRUST);
+        audio_stop(SFX_UFO_LOOP);
     } else if (game_state == STATE_PAUSED && !paused) {
         game_state = STATE_PLAYING;
+        if (ufo.active) {
+            audio_play(SFX_UFO_LOOP);
+        }
     }
 }
 
@@ -1103,13 +1104,16 @@ void game_handle_input(SDL_Event *event) {
                 selected_option = (selected_option + 2) % 3;
             } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d || event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) {
                 selected_option = (selected_option + 1) % 3;
-            } else if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
+            } else if (event->key.keysym.sym == SDLK_RETURN) {
                 apply_upgrade(upgrade_options[selected_option]);
                 if (wave_cleared_pending) {
                     wave_cleared_pending = 0;
                     start_next_level();
                 }
                 game_state = is_attract_ai ? STATE_ATTRACT_GAMEPLAY : STATE_PLAYING;
+                if (ufo.active) {
+                    audio_play(SFX_UFO_LOOP);
+                }
             }
         }
     }
@@ -1130,15 +1134,17 @@ void game_update(float delta_time) {
             camera_pos.x += (target_cam_x - camera_pos.x) * 6.0f * delta_time;
             camera_pos.y += (target_cam_y - camera_pos.y) * 6.0f * delta_time;
         }
-    } else {
+    } else if (game_state != STATE_PAUSED && game_state != STATE_UPGRADE_SELECT) {
         camera_pos = (Vec2){0.0f, 0.0f};
     }
 
-    if (god_mode_msg_timer > 0.0f) {
-        god_mode_msg_timer -= delta_time;
+    if (game_state != STATE_PAUSED && game_state != STATE_UPGRADE_SELECT) {
+        if (god_mode_msg_timer > 0.0f) {
+            god_mode_msg_timer -= delta_time;
+        }
     }
 
-    if (game_state != STATE_PLAYING && game_state != STATE_ATTRACT_GAMEPLAY) {
+    if (game_state != STATE_PLAYING && game_state != STATE_ATTRACT_GAMEPLAY && game_state != STATE_PAUSED && game_state != STATE_UPGRADE_SELECT) {
         idle_timer += delta_time;
         if (idle_timer >= ATTRACT_DELAY) {
             idle_timer = 0.0f;
@@ -1165,120 +1171,154 @@ void game_update(float delta_time) {
                 start_next_level();
             }
             game_state = STATE_ATTRACT_GAMEPLAY;
-        }
-    }
-
-    // Update combo timer
-    if (combo_timer > 0.0f) {
-        combo_timer -= delta_time;
-        if (combo_timer <= 0.0f) combo_count = 0;
-    }
-
-    // Update near-miss cooldown
-    if (near_miss_cooldown > 0.0f) near_miss_cooldown -= delta_time;
-
-    // Near-miss XP: if a UFO bullet passes very close to player
-    if (player.active && near_miss_cooldown <= 0.0f) {
-        for (int b = 0; b < MAX_UFO_BULLETS; b++) {
-            if (!ufo_bullets[b].active) continue;
-            float dx = ufo_bullets[b].pos.x - player.pos.x;
-            float dy = ufo_bullets[b].pos.y - player.pos.y;
-            float dist_sq = dx*dx + dy*dy;
-            if (dist_sq < 35.0f * 35.0f && dist_sq > player.radius * player.radius) {
-                // Adrenaline bonus – small XP orb spawn
-                spawn_orb(player.pos, 3);
-                near_miss_cooldown = 1.0f;
-                break;
+            if (ufo.active) {
+                audio_play(SFX_UFO_LOOP);
             }
         }
     }
 
-    // Edge flash – detect if player is near wrap boundary at speed
-    if (player.active) {
-        float spd = sqrtf(player.vel.x*player.vel.x + player.vel.y*player.vel.y);
-        if (spd > 120.0f) {
-            float margin = 40.0f;
-            if (player.pos.x < margin || player.pos.x > SCREEN_WIDTH - margin ||
-                player.pos.y < margin || player.pos.y > SCREEN_HEIGHT - margin) {
-                edge_flash_timer = 0.15f;
-            }
-        }
-    }
-    if (edge_flash_timer > 0.0f) edge_flash_timer -= delta_time;
-
-    // Update score floaters
-    for (int i = 0; i < MAX_SCORE_FLOATS; i++) {
-        if (score_floats[i].active) {
-            score_floats[i].y += score_floats[i].vy * delta_time;
-            score_floats[i].life -= delta_time;
-            if (score_floats[i].life <= 0.0f) score_floats[i].active = 0;
-        }
-    }
-
-    // XP bar flash
-    if (xp_flash_timer > 0.0f) xp_flash_timer -= delta_time;
-
-    // Wave clear message timer
-    if (wave_clear_msg_timer > 0.0f) wave_clear_msg_timer -= delta_time;
-
-    if (game_state == STATE_TITLE || game_state == STATE_ATTRACT_INSTRUCTIONS || game_state == STATE_ATTRACT_GAMEPLAY) {
-        // Just rotate menu asteroids
-        static float init_title_ast = 0.0f;
-        if (init_title_ast == 0.0f) {
-            init_title_ast = 1.0f;
-            // Spawn a few background asteroids just to float around the title screen
-            for (int i = 0; i < 4; i++) {
-                Vec2 pos = {((float)rand() / RAND_MAX) * SCREEN_WIDTH, ((float)rand() / RAND_MAX) * SCREEN_HEIGHT};
-                spawn_asteroid(pos, 3);
-            }
-        }
-    }
-
-    // --- Update Particles (always update, even in title/game over) ---
-    for (int i = 0; i < MAX_PARTICLES; i++) {
-        if (particles[i].life > 0.0f) {
-            particles[i].life -= delta_time;
-            particles[i].angle += particles[i].rot_speed * delta_time;
-            particles[i].pos.x += particles[i].vel.x * delta_time;
-            particles[i].pos.y += particles[i].vel.y * delta_time;
-            if (player.active && distance_sq(particles[i].pos, player.pos) > 1300.0f * 1300.0f) {
-                particles[i].life = 0.0f;
-            }
-        }
-    }
-
-    // --- Update Asteroids (always update) ---
     int active_asteroids_count = 0;
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (asteroids[i].active) {
-            active_asteroids_count++;
-            // Record trail before moving
-            asteroids[i].trail_pos[asteroids[i].trail_head] = asteroids[i].pos;
-            asteroids[i].trail_ang[asteroids[i].trail_head] = asteroids[i].angle;
-            asteroids[i].trail_head = (asteroids[i].trail_head + 1) % PHOS_TRAIL_LEN;
-            asteroids[i].angle += asteroids[i].rot_speed * delta_time;
-            
-            // Move asteroid without wrap-around:
-            Vec2 ext_f = calculate_external_forces(asteroids[i].pos);
-            asteroids[i].vel.x += ext_f.x * delta_time;
-            asteroids[i].vel.y += ext_f.y * delta_time;
-            asteroids[i].pos.x += asteroids[i].vel.x * delta_time;
-            asteroids[i].pos.y += asteroids[i].vel.y * delta_time;
+    if (game_state != STATE_PAUSED && game_state != STATE_UPGRADE_SELECT) {
+        // Update combo timer
+        if (combo_timer > 0.0f) {
+            combo_timer -= delta_time;
+            if (combo_timer <= 0.0f) combo_count = 0;
+        }
 
-            // If asteroid is too far from player, reposition it!
-            if (player.active) {
-                float dist_sq = distance_sq(asteroids[i].pos, player.pos);
-                if (dist_sq > 1200.0f * 1200.0f) {
-                    float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
-                    float dist = 850.0f + ((float)rand() / RAND_MAX) * 250.0f;
-                    asteroids[i].pos.x = player.pos.x + cosf(angle) * dist;
-                    asteroids[i].pos.y = player.pos.y + sinf(angle) * dist;
-                    // Reset trail to prevent line artifacts stretching across the screen
-                    for (int t = 0; t < PHOS_TRAIL_LEN; t++) {
-                        asteroids[i].trail_pos[t] = asteroids[i].pos;
+        // Update near-miss cooldown
+        if (near_miss_cooldown > 0.0f) near_miss_cooldown -= delta_time;
+
+        // Near-miss XP: if a UFO bullet passes very close to player
+        if (player.active && near_miss_cooldown <= 0.0f) {
+            for (int b = 0; b < MAX_UFO_BULLETS; b++) {
+                if (!ufo_bullets[b].active) continue;
+                float dx = ufo_bullets[b].pos.x - player.pos.x;
+                float dy = ufo_bullets[b].pos.y - player.pos.y;
+                float dist_sq = dx*dx + dy*dy;
+                if (dist_sq < 35.0f * 35.0f && dist_sq > player.radius * player.radius) {
+                    // Adrenaline bonus – small XP orb spawn
+                    spawn_orb(player.pos, 3);
+                    near_miss_cooldown = 1.0f;
+                    break;
+                }
+            }
+        }
+
+        // Edge flash – detect if player is near wrap boundary at speed
+        if (player.active) {
+            float spd = sqrtf(player.vel.x*player.vel.x + player.vel.y*player.vel.y);
+            if (spd > 120.0f) {
+                float margin = 40.0f;
+                if (player.pos.x < margin || player.pos.x > SCREEN_WIDTH - margin ||
+                    player.pos.y < margin || player.pos.y > SCREEN_HEIGHT - margin) {
+                    edge_flash_timer = 0.15f;
+                }
+            }
+        }
+        if (edge_flash_timer > 0.0f) edge_flash_timer -= delta_time;
+
+        // Update score floaters
+        for (int i = 0; i < MAX_SCORE_FLOATS; i++) {
+            if (score_floats[i].active) {
+                score_floats[i].y += score_floats[i].vy * delta_time;
+                score_floats[i].life -= delta_time;
+                if (score_floats[i].life <= 0.0f) score_floats[i].active = 0;
+            }
+        }
+
+        // XP bar flash
+        if (xp_flash_timer > 0.0f) xp_flash_timer -= delta_time;
+
+
+
+        if (game_state == STATE_TITLE || game_state == STATE_ATTRACT_INSTRUCTIONS || game_state == STATE_ATTRACT_GAMEPLAY) {
+            // Just rotate menu asteroids
+            static float init_title_ast = 0.0f;
+            if (init_title_ast == 0.0f) {
+                init_title_ast = 1.0f;
+                // Spawn a few background asteroids just to float around the title screen
+                for (int i = 0; i < 4; i++) {
+                    Vec2 pos = {((float)rand() / RAND_MAX) * SCREEN_WIDTH, ((float)rand() / RAND_MAX) * SCREEN_HEIGHT};
+                    spawn_asteroid(pos, 3);
+                }
+            }
+        }
+
+        // --- Update Particles (always update, even in title/game over) ---
+        for (int i = 0; i < MAX_PARTICLES; i++) {
+            if (particles[i].life > 0.0f) {
+                particles[i].life -= delta_time;
+                particles[i].angle += particles[i].rot_speed * delta_time;
+                particles[i].pos.x += particles[i].vel.x * delta_time;
+                particles[i].pos.y += particles[i].vel.y * delta_time;
+                if (player.active && distance_sq(particles[i].pos, player.pos) > 1300.0f * 1300.0f) {
+                    particles[i].life = 0.0f;
+                }
+            }
+        }
+
+        // --- Update Asteroids (always update) ---
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (asteroids[i].active) {
+                active_asteroids_count++;
+                // Record trail before moving
+                asteroids[i].trail_pos[asteroids[i].trail_head] = asteroids[i].pos;
+                asteroids[i].trail_ang[asteroids[i].trail_head] = asteroids[i].angle;
+                asteroids[i].trail_head = (asteroids[i].trail_head + 1) % PHOS_TRAIL_LEN;
+                asteroids[i].angle += asteroids[i].rot_speed * delta_time;
+                
+                // Move asteroid without wrap-around:
+                Vec2 ext_f = calculate_external_forces(asteroids[i].pos);
+                asteroids[i].vel.x += ext_f.x * delta_time;
+                asteroids[i].vel.y += ext_f.y * delta_time;
+                asteroids[i].pos.x += asteroids[i].vel.x * delta_time;
+                asteroids[i].pos.y += asteroids[i].vel.y * delta_time;
+
+                // If asteroid is too far from player, reposition it!
+                if (player.active) {
+                    float dist_sq = distance_sq(asteroids[i].pos, player.pos);
+                    if (dist_sq > 1200.0f * 1200.0f) {
+                        float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+                        float dist = 850.0f + ((float)rand() / RAND_MAX) * 250.0f;
+                        asteroids[i].pos.x = player.pos.x + cosf(angle) * dist;
+                        asteroids[i].pos.y = player.pos.y + sinf(angle) * dist;
+                        // Reset trail to prevent line artifacts stretching across the screen
+                        for (int t = 0; t < PHOS_TRAIL_LEN; t++) {
+                            asteroids[i].trail_pos[t] = asteroids[i].pos;
+                        }
                     }
                 }
             }
+        }
+
+        // Continual spawning: if active asteroids falls below target count, spawn new ones off-screen
+        int target_asteroids = 6 + player_level + (difficulty * 2);
+        if (target_asteroids > MAX_ASTEROIDS - 4) {
+            target_asteroids = MAX_ASTEROIDS - 4;
+        }
+        if (player.active && active_asteroids_count < target_asteroids) {
+            // Spawn a new large asteroid in an off-screen ring
+            float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+            float dist = 850.0f + ((float)rand() / RAND_MAX) * 250.0f;
+            Vec2 pos = {
+                player.pos.x + cosf(angle) * dist,
+                player.pos.y + sinf(angle) * dist
+            };
+            spawn_asteroid(pos, 3);
+        }
+
+        // Spawn/maintain Anomalous Void Rift off-screen if player is high enough level
+        if (player.active && player_level >= 4 && !rift.active) {
+            rift.active = 1;
+            float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+            float dist = 850.0f + ((float)rand() / RAND_MAX) * 250.0f;
+            rift.pos.x = player.pos.x + cosf(angle) * dist;
+            rift.pos.y = player.pos.y + sinf(angle) * dist;
+            rift.radius = 35.0f;
+            rift.angle1 = 0.0f;
+            rift.angle2 = 0.0f;
+            rift.pulse_timer = 0.0f;
+            rift.spawn_timer = 5.0f;
         }
     }
 
@@ -1297,22 +1337,6 @@ void game_update(float delta_time) {
             cur_beat = 1 - cur_beat;
             audio_play(cur_beat ? SFX_BEAT1 : SFX_BEAT2);
             beat_timer = current_beat_delay;
-        }
-    }
-
-    // --- Check level complete ---
-    int target_ast = get_target_asteroids();
-    if (player.active && wave_asteroids_destroyed >= target_ast && level_start_timer > 0.0f) {
-        level_start_timer -= delta_time;
-        if (level_start_timer <= 0.0f) {
-            // Award wave clear bonus
-            wave_clear_bonus = 500 + level * 100;
-            score += wave_clear_bonus;
-            wave_clear_msg_timer = 2.5f;
-            wave_cleared_pending = 1;
-            wave_asteroids_destroyed = 0;
-            spawn_upgrade_options();
-            game_state = STATE_UPGRADE_SELECT;
         }
     }
 
@@ -1537,6 +1561,7 @@ void game_update(float delta_time) {
                 if (player_xp >= xp_threshold) {
                     player_xp -= xp_threshold;
                     player_level++;
+                    level = player_level;
                     xp_threshold = (int)(xp_threshold * 1.6f);
                     xp_flash_timer = 0.4f;
                     spawn_upgrade_options();
@@ -2248,7 +2273,6 @@ void game_render() {
     // HUD
     char hud_text[64];
     sprintf(hud_text, "%05d", score); vf_draw_string(hud_text, 40, 25, 20, main_color);
-    sprintf(hud_text, "WAVE %d", level); vf_draw_string(hud_text, 40, 55, 12, (SDL_Color){150, 255, 150, 255});
     // Combo display
     if (combo_count >= 2) {
         SDL_Color cc = (combo_count >= 4) ? (SDL_Color){255, 80, 80, 255} : (SDL_Color){255, 200, 50, 255};
@@ -2274,7 +2298,7 @@ void game_render() {
 
     // Upgrade icon strip (right side of screen, abbreviated)
     if (game_state == STATE_PLAYING || game_state == STATE_ATTRACT_GAMEPLAY) {
-        float ix = SCREEN_WIDTH - 30.0f, iy = 120.0f;
+        float ix = SCREEN_WIDTH - 70.0f, iy = 120.0f;
         SDL_Color ic = {100, 220, 255, 180};
         int iw = 10;
         if (player_upgrades.triple_shot)         { vf_draw_string("3X", ix, iy, iw, ic); iy += 18.0f; }
@@ -2291,13 +2315,7 @@ void game_render() {
 
 
 
-    // Wave clear bonus message
-    if (wave_clear_msg_timer > 0.0f) {
-        float pulse = 1.0f + 0.08f * sinf(wave_clear_msg_timer * 20.0f);
-        SDL_Color wc = {150, 255, 150, 255};
-        sprintf(hud_text, "WAVE CLEAR!  +%d", wave_clear_bonus);
-        vf_draw_string_centered(hud_text, SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 40, 22 * pulse, wc);
-    }
+    // Wave clear message removed
 
     if (god_mode_msg_timer > 0.0f) {
         if (god_mode) {
@@ -2396,7 +2414,7 @@ void game_render() {
         float sz = 25.0f + 2.0f * sinf(upgrade_pulse * 3.0f);
         vf_draw_string_centered("XP OVERLOAD!", SCREEN_WIDTH/2.0f, 95, sz, (SDL_Color){100, 255, 150, 255});
         vf_draw_string_centered("CHOOSE YOUR UPGRADE", SCREEN_WIDTH/2.0f, 150, 16, (SDL_Color){200, 200, 200, 255});
-        vf_draw_string_centered("ARROW KEYS + SPACE", SCREEN_WIDTH/2.0f, 175, 12, (SDL_Color){120, 120, 120, 255});
+        vf_draw_string_centered("WASD / ARROW KEYS + ENTER", SCREEN_WIDTH/2.0f, 175, 12, (SDL_Color){120, 120, 120, 255});
         for (int i=0; i<3; i++) {
             int is_sel = (i == selected_option);
             float pulse_s = is_sel ? (1.0f + 0.06f * sinf(upgrade_pulse * 5.0f + i)) : 1.0f;

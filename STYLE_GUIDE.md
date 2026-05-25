@@ -11,7 +11,7 @@ Every `.c` and `.h` file begins with a block comment header:
 
 ```c
 /*
- * game.c
+ * split modules (player.c, enemies.c, ui_hud.c, world_gen.c, state.c)
  *
  * Core game logic: state machine, entity update, collision, and rendering.
  *

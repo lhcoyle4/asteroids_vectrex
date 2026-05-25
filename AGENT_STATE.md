@@ -23,7 +23,7 @@ Phase 2: Noctis HUD overhaul + comprehensive settings system
    ui_section_divider, ui_warning_chevrons, ui_vignette)
 - `include/game.h`: Settings (9 categories), WorldGenParams, 3 new enums,
   11 STATE_SETTINGS_* states
-- `src/game.c`: render_hud/minimap/overlays/menus rewritten in HUD_* palette;
+- `src/split modules (player.c, enemies.c, ui_hud.c, world_gen.c, state.c)`: render_hud/minimap/overlays/menus rewritten in HUD_* palette;
   9-tab settings menu; settings_save/load (fuligin.cfg)
 - `STYLE_GUIDE.md`: HUD_* palette + typography + settings UI style rules
 - `FULIGIN_SETTINGS_SPEC.md`: full design spec
@@ -34,7 +34,7 @@ Pushed to: lhcoyle4/fuligin (agent/claude) + lhcoyle4/asteroids_vectrex (agent/c
 1. Commit Makefile rename (launch_fuligin.exe) + src/ai.c inclusion — in progress
 2. UI polish pass: ui.c scanline/vignette/bar tuning
 3. Verify settings_save/load against fuligin.cfg on live game
-4. Once Gemini releases game.c: wire WorldGenParams seed into game_init(),
+4. Once Gemini releases split modules (player.c, enemies.c, ui_hud.c, world_gen.c, state.c): wire WorldGenParams seed into game_init(),
    add SDL_SetWindowFullscreen for fullscreen toggle
 5. Visual QA: launch game, screenshot HUD panels and settings menu
 6. PR agent/claude → antigravity (human action)

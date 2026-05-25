@@ -1,7 +1,7 @@
 # FULIGIN HUD Design Brief
 ## Terminal Cockpit Aesthetic — FF7R / Caves of Qud Synthesis
 
-*Prepared for 3 parallel coding agents: ui.h + ui.c, game.c render functions, and STYLE_GUIDE.md update.*
+*Prepared for 3 parallel coding agents: ui.h + ui.c, split modules (player.c, enemies.c, ui_hud.c, world_gen.c, state.c) render functions, and STYLE_GUIDE.md update.*
 *Based on: FF7 Remake HUD analysis, Caves of Qud UI (Polat Yarisci, 2020), lore requirements.*
 
 ---

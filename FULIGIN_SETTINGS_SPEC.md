@@ -1,7 +1,7 @@
 # FULIGIN — Settings Menu and World Generation Specification
 
 *Design specification for the settings menu system and procedural world generation.*
-*Implementation target: `settings.c` / `settings.h`, `worldgen.c` / `worldgen.h`, integration in `game.c`.*
+*Implementation target: `settings.c` / `settings.h`, `worldgen.c` / `worldgen.h`, integration in `split modules (player.c, enemies.c, ui_hud.c, world_gen.c, state.c)`.*
 
 ---
 
@@ -88,7 +88,7 @@ The `g_settings` global is the single source of truth. All subsystems read direc
 
 #### Existing Settings Variables
 
-The following globals already exist in `game.c` and must be aliased or replaced:
+The following globals already exist in `split modules (player.c, enemies.c, ui_hud.c, world_gen.c, state.c)` and must be aliased or replaced:
 
 | Old variable | New field | Action |
 |---|---|---|
@@ -572,4 +572,4 @@ int worldgen_init(WorldGenParams *params);
 
 ---
 
-*This specification is authoritative for implementation of `settings.c`, `settings.h`, `worldgen.c`, `worldgen.h`, and all callers in `game.c`. Treat field names, enum values, function signatures, and pixel constants as implementation contracts. Do not deviate from the `WorldGenParams` struct layout without updating this document and all call sites.*
+*This specification is authoritative for implementation of `settings.c`, `settings.h`, `worldgen.c`, `worldgen.h`, and all callers in `split modules (player.c, enemies.c, ui_hud.c, world_gen.c, state.c)`. Treat field names, enum values, function signatures, and pixel constants as implementation contracts. Do not deviate from the `WorldGenParams` struct layout without updating this document and all call sites.*

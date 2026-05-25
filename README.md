@@ -80,7 +80,7 @@ SDL2.dll and SDL2_mixer.dll are bundled in the repository root — the game runs
 fuligin/
 ├── src/
 │   ├── main.c              — Entry point, SDL2 init, and main loop
-│   ├── game.c              — Core simulation: entities, physics, AI, rendering
+│   ├── split modules (player.c, enemies.c, ui_hud.c, world_gen.c, state.c)              — Core simulation: entities, physics, AI, rendering
 │   ├── audio.c             — Procedural audio engine (synthesized SFX + dynamic music)
 │   ├── vector_graphics.c   — Phosphor renderer with persistence and post-processing effects
 │   └── vector_font.c       — Stroke font renderer

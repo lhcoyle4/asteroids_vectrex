@@ -277,6 +277,9 @@ typedef struct {
     int singularity_displacer;
     int singularity_whip;
     int resonance_cascade;
+    int vortex_grenade;
+    int auto_turret;
+    int nova_explosion;
 } PlayerUpgrades;
 
 // Game Global Variables
@@ -1128,8 +1131,9 @@ static void apply_upgrade(UpgradeType type) {
         case UPGRADE_SINGULARITY_DISPLACER: player_upgrades.singularity_displacer = 1; break;
         case UPGRADE_SINGULARITY_WHIP: player_upgrades.singularity_whip = 1; break;
         case UPGRADE_RESONANCE_CASCADE: player_upgrades.resonance_cascade = 1; break;
-        // Remaining 10+ buffs could be implemented with more complex logic, 
-        // for now we'll ensure the player_upgrades struct covers the main ones requested.
+        case UPGRADE_VORTEX_GRENADE: player_upgrades.vortex_grenade = 1; break;
+        case UPGRADE_AUTO_TURRET: player_upgrades.auto_turret = 1; break;
+        case UPGRADE_NOVA_EXPLOSION: player_upgrades.nova_explosion = 1; break;
         default: break; 
     }
 }
@@ -1223,6 +1227,9 @@ static void start_new_game() {
     player_upgrades.xp_mult = 1.0f;
     player_upgrades.mirror_image = 0;
     player_upgrades.phase_shift = 0;
+    player_upgrades.vortex_grenade = 0;
+    player_upgrades.auto_turret = 0;
+    player_upgrades.nova_explosion = 0;
     mirror_active_flag = 0;
 
     // Clear mines, powerups, rift, screen shake
@@ -1241,6 +1248,14 @@ static void start_new_game() {
     res_isotopes=0; res_coolant=0; res_medicinals=0;
     res_biomatter=0; res_shield_caps=0; res_alien_flora=0;
     fuel_current=fuel_max=100.0f;
+    /* Populate warp loci -- home base + 4 zone beacons */
+    warp_loc_count = 0;
+    warp_locs[warp_loc_count++] = (WarpLoc){{  0.0f,    0.0f  }, "HOME STATION"};
+    warp_locs[warp_loc_count++] = (WarpLoc){{ 2000.0f,  500.0f}, "SCRAP FIELDS"};
+    warp_locs[warp_loc_count++] = (WarpLoc){{-1800.0f, 1200.0f}, "VOID REACHES"};
+    warp_locs[warp_loc_count++] = (WarpLoc){{ 3500.0f,-2000.0f}, "IRON SHOALS"};
+    warp_locs[warp_loc_count++] = (WarpLoc){{-3000.0f,-1500.0f}, "DEEP DRIFT"};
+    warp_menu_sel = 0;
     for(int di=0;di<MAX_PLAYER_DRONES;di++) player_drones[di].active=0;
     reset_player();
     start_next_level();
@@ -1381,6 +1396,82 @@ void game_handle_input(SDL_Event *event) {
                 minimap_visible = !minimap_visible;
             } else if ((event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_DOWN) && player.active) {
                 trigger_hyperspace();
+            } else if (event->key.keysym.sym == SDLK_b && player.active) {
+                /* B = open shop when docked at home station */
+                float _dx = player.pos.x, _dy = player.pos.y;
+                if (sqrtf(_dx*_dx + _dy*_dy) < 600.0f) {
+                    game_state = STATE_SHOP;
+                    shop_sel = 0;
+                    audio_stop(SFX_THRUST);
+                }
+            } else if (event->key.keysym.sym == SDLK_m && player.active) {
+                /* M = open warp menu */
+                game_state = STATE_WARP_MENU;
+                warp_menu_sel = 0;
+                audio_stop(SFX_THRUST);
+            } else if (event->key.keysym.sym == SDLK_g && player.active && player_upgrades.vortex_grenade) {
+                /* G = launch vortex grenade */
+                for (int _bi = 0; _bi < MAX_BULLETS; _bi++) {
+                    if (!bullets[_bi].active) {
+                        bullets[_bi].active = 1;
+                        bullets[_bi].pos = player.pos;
+                        bullets[_bi].vel.x = sinf(player.angle) * 110.0f;
+                        bullets[_bi].vel.y = -cosf(player.angle) * 110.0f;
+                        bullets[_bi].life = 3.2f;
+                        bullets[_bi].bounces = 0;
+                        bullets[_bi].is_homing = 0;
+                        bullets[_bi].pierces = 1;
+                        break;
+                    }
+                }
+            }
+        } else if (game_state == STATE_SHOP) {
+            if (event->key.keysym.sym == SDLK_ESCAPE) {
+                game_state = STATE_PLAYING;
+            } else if (event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w) {
+                shop_sel = (shop_sel + 13) % 14;
+            } else if (event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) {
+                shop_sel = (shop_sel + 1) % 14;
+            } else if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) {
+                switch (shop_sel) {
+                    case 0: if (res_ammo >= 2) { res_ammo -= 2; fuel_current += 25.0f; if (fuel_current > fuel_max) fuel_current = fuel_max; } break;
+                    case 1: if (res_autodyne_frags >= 3) { res_autodyne_frags -= 3; fuel_current = fuel_max; } break;
+                    case 2: if (res_void_steel >= 2) { res_void_steel -= 2; player_upgrades.speed_mult *= 1.15f; } break;
+                    case 3: if (res_hex_modules >= 2) { res_hex_modules -= 2; player_upgrades.fire_cooldown_mult *= 0.85f; } break;
+                    case 4: if (res_void_steel >= 3) { res_void_steel -= 3; player_upgrades.shield_active = 1; } break;
+                    case 5: if (res_medicinals >= 4) { res_medicinals -= 4; lives++; } break;
+                    case 6: if (res_isotopes >= 2) { res_isotopes -= 2; res_rockets += 5; } break;
+                    case 7: if (res_void_steel >= 4) { res_void_steel -= 4; player_upgrades.auto_turret = 1; } break;
+                    case 8: if (res_biomatter >= 3) { res_biomatter -= 3; lives++; } break;
+                    case 9: if (res_hex_modules >= 3) { res_hex_modules -= 3; warp_drive_range += 1000.0f; } break;
+                    case 10: if (res_coolant >= 2) { res_coolant -= 2; fuel_max += 50.0f; fuel_current += 50.0f; } break;
+                    case 11: if (res_contraband >= 2) { res_contraband -= 2; res_ammo += 20; res_rockets += 3; } break;
+                    case 12: if (res_biomatter >= 5) { res_biomatter -= 5; res_void_steel += 5; } break;
+                    case 13: if (res_alien_flora >= 3) { res_alien_flora -= 3; player_upgrades.magnet_radius += 100.0f; } break;
+                    default: break;
+                }
+            }
+        } else if (game_state == STATE_WARP_MENU) {
+            if (event->key.keysym.sym == SDLK_ESCAPE) {
+                game_state = STATE_PLAYING;
+            } else if ((event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w) && warp_loc_count > 0) {
+                warp_menu_sel = (warp_menu_sel + warp_loc_count - 1) % warp_loc_count;
+            } else if ((event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) && warp_loc_count > 0) {
+                warp_menu_sel = (warp_menu_sel + 1) % warp_loc_count;
+            } else if (event->key.keysym.sym == SDLK_RETURN && warp_loc_count > 0) {
+                int _wi = warp_menu_sel;
+                float _wdx = warp_locs[_wi].pos.x - player.pos.x;
+                float _wdy = warp_locs[_wi].pos.y - player.pos.y;
+                float _wdist = sqrtf(_wdx*_wdx + _wdy*_wdy);
+                if (_wdist <= warp_drive_range && fuel_current >= 20.0f) {
+                    player.pos = warp_locs[_wi].pos;
+                    player.vel = (Vec2){0.0f, 0.0f};
+                    fuel_current -= 20.0f;
+                    camera_pos.x = player.pos.x - SCREEN_WIDTH * 0.5f;
+                    camera_pos.y = player.pos.y - SCREEN_HEIGHT * 0.5f;
+                    vg_set_shake(6.0f, 0.3f);
+                    game_state = STATE_PLAYING;
+                }
             }
         } else if (game_state == STATE_PAUSED) {
             if (event->key.keysym.sym == SDLK_ESCAPE || event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
@@ -1912,11 +2003,23 @@ void game_update(float delta_time) {
             player.vel.y -= cosf(player.angle) * THRUST_FORCE * player_upgrades.speed_mult * delta_time;
             is_thrusting = 1;
             thrust_timer += delta_time;
+            /* Drain fuel while thrusting */
+            fuel_current -= 3.5f * delta_time;
+            if (fuel_current < 0.0f) fuel_current = 0.0f;
             audio_play(SFX_THRUST);
             on_thrust(player.pos, player.vel);
         } else {
             is_thrusting = 0;
             audio_stop(SFX_THRUST);
+        }
+
+        /* Passive fuel regen near home station (radius 600u) */
+        {
+            float _hx = player.pos.x, _hy = player.pos.y;
+            if (sqrtf(_hx*_hx + _hy*_hy) < 600.0f && fuel_current < fuel_max) {
+                fuel_current += 8.0f * delta_time;
+                if (fuel_current > fuel_max) fuel_current = fuel_max;
+            }
         }
 
         // Auto-firing logic
@@ -1947,6 +2050,33 @@ void game_update(float delta_time) {
             mirror_angle = player.angle;
         } else if (!player_upgrades.mirror_image) {
             mirror_active_flag = 0;
+        }
+
+        /* Auto turret: fires 4-way ring every 2 seconds */
+        static float auto_turret_timer = 0.0f;
+        if (player_upgrades.auto_turret && player.active) {
+            auto_turret_timer += delta_time;
+            if (auto_turret_timer >= 2.0f) {
+                auto_turret_timer = 0.0f;
+                for (int _at = 0; _at < 4; _at++) {
+                    float _aang = (float)_at * (3.14159f * 0.5f);
+                    for (int _bi = 0; _bi < MAX_BULLETS; _bi++) {
+                        if (!bullets[_bi].active) {
+                            bullets[_bi].active = 1;
+                            bullets[_bi].pos = player.pos;
+                            bullets[_bi].vel.x = sinf(_aang) * 340.0f;
+                            bullets[_bi].vel.y = -cosf(_aang) * 340.0f;
+                            bullets[_bi].life = 1.8f;
+                            bullets[_bi].bounces = 0;
+                            bullets[_bi].is_homing = 0;
+                            bullets[_bi].pierces = player_upgrades.piercing;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if (!player_upgrades.auto_turret) {
+            auto_turret_timer = 0.0f;
         }
 
         if (fire_key_down && fire_cooldown_timer <= 0.0f) {
@@ -2535,6 +2665,26 @@ void game_update(float delta_time) {
                     break;
                 }
                 // Impact!
+                if (player_upgrades.nova_explosion) {
+                    /* Nova shell: ring of 6 fragment bullets on impact */
+                    float _bx = bullets[b].pos.x, _by = bullets[b].pos.y;
+                    for (int _nv = 0; _nv < 6; _nv++) {
+                        float _nang = (float)_nv * (3.14159f * 2.0f / 6.0f);
+                        for (int _nbi = 0; _nbi < MAX_BULLETS; _nbi++) {
+                            if (!bullets[_nbi].active) {
+                                bullets[_nbi].active = 1;
+                                bullets[_nbi].pos = (Vec2){_bx, _by};
+                                bullets[_nbi].vel.x = sinf(_nang) * 220.0f;
+                                bullets[_nbi].vel.y = -cosf(_nang) * 220.0f;
+                                bullets[_nbi].life = 0.8f;
+                                bullets[_nbi].bounces = 0;
+                                bullets[_nbi].is_homing = 0;
+                                bullets[_nbi].pierces = 0;
+                                break;
+                            }
+                        }
+                    }
+                }
                 if (player_upgrades.resonance_cascade) {
                     for (int s = 0; s < 4; s++) {
                         if (!shockwaves[s].active) {

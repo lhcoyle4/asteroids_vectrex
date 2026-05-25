@@ -328,6 +328,18 @@ typedef struct {
 } RiftEntity;
 
 /**
+ * @brief A black hole entity that exerts a strong gravitational pull.
+ */
+typedef struct {
+    int   active;
+    Vec2  pos;
+    float mass;
+    float radius;
+} GravityWellEntity;
+
+#define MAX_GRAVITY_WELLS 4
+
+/**
  * @brief A collectible chronicle-orb entity.
  * Drifts toward the player when within magnet radius. Worth value XP on pickup.
  */
@@ -605,6 +617,7 @@ static Particle       particles[MAX_PARTICLES];
 static OrbEntity      orbs[MAX_ORBS];
 static RiftEntity     rift;
 static RiftEntity     player_rift;
+static GravityWellEntity gravity_wells[MAX_GRAVITY_WELLS];
 static ShockwaveEntity shockwaves[4];
 static StructureEntity structures[MAX_STRUCTURE];
 static NpcEntity      npcs[MAX_NPC];
@@ -939,6 +952,22 @@ static Vec2 calculate_external_forces(Vec2 pos)
             if (pull_str > 250.0f) pull_str = 250.0f;
             force.x += (dx / dist) * pull_str;
             force.y += (dy / dist) * pull_str;
+        }
+    }
+
+    /* Gravity Wells (Black Holes) */
+    for (int i = 0; i < MAX_GRAVITY_WELLS; i++) {
+        if (gravity_wells[i].active) {
+            float dx      = gravity_wells[i].pos.x - pos.x;
+            float dy      = gravity_wells[i].pos.y - pos.y;
+            float dist_sq = dx * dx + dy * dy;
+            if (dist_sq > 1.0f && dist_sq < 2500.0f * 2500.0f) {
+                float dist     = sqrtf(dist_sq);
+                float pull_str = gravity_wells[i].mass / dist_sq;
+                if (pull_str > 500.0f) pull_str = 500.0f;
+                force.x += (dx / dist) * pull_str;
+                force.y += (dy / dist) * pull_str;
+            }
         }
     }
 
@@ -1693,9 +1722,25 @@ static void start_next_level()
     for (int i = 0; i < MAX_BULLETS; i++)     bullets[i].active    = 0;
     for (int i = 0; i < MAX_UFO_BULLETS; i++) ufo_bullets[i].active = 0;
     for (int i = 0; i < MAX_PARTICLES; i++)   particles[i].life    = 0.0f;
+    for (int i = 0; i < MAX_GRAVITY_WELLS; i++) gravity_wells[i].active = 0;
 
     ufo.active = 0;
     audio_stop(SFX_UFO_LOOP);
+
+    /* Spawn new Gravity Wells (Black Holes) starting at level 2 */
+    if (level >= 2) {
+        int gw_count = level / 2;
+        if (gw_count > MAX_GRAVITY_WELLS) gw_count = MAX_GRAVITY_WELLS;
+        for (int i = 0; i < gw_count; i++) {
+            gravity_wells[i].active = 1;
+            float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+            float dist  = 600.0f + ((float)rand() / RAND_MAX) * 2000.0f;
+            gravity_wells[i].pos.x = player.pos.x + cosf(angle) * dist;
+            gravity_wells[i].pos.y = player.pos.y + sinf(angle) * dist;
+            gravity_wells[i].mass = 400000.0f + ((float)rand() / RAND_MAX) * 200000.0f;
+            gravity_wells[i].radius = 35.0f;
+        }
+    }
 
     /* Spawn new asteroid formation at safe distance from the Autodyne */
     WorldRegion region;
@@ -1751,6 +1796,7 @@ static void start_new_game()
     for (int i = 0; i < MAX_PARTICLES; i++)    particles[i].life      = 0.0f;
     for (int i = 0; i < MAX_ORBS; i++)         orbs[i].active         = 0;
     for (int i = 0; i < MAX_SCORE_FLOATS; i++) score_floats[i].active = 0;
+    for (int i = 0; i < MAX_GRAVITY_WELLS; i++) gravity_wells[i].active = 0;
 
     combo_count = 0;
     combo_timer = 0.0f;
@@ -5004,6 +5050,18 @@ static void render_entities(void)
         vg_draw_shape(&rs, rift.pos, rift.angle1, rift.radius / 16.0f);
         vg_draw_shape(&rs, rift.pos, rift.angle2,
                       (rift.radius / 16.0f) * 0.8f);
+    }
+
+    /*  Gravity Wells  */
+    for (int i = 0; i < MAX_GRAVITY_WELLS; i++) {
+        if (gravity_wells[i].active) {
+            Shape bh;
+            bh.lines      = ufo_lines;
+            bh.line_count = 10;
+            bh.color      = (SDL_Color){30, 0, 80, 255};
+            vg_draw_shape(&bh, gravity_wells[i].pos, game_time * 2.0f, gravity_wells[i].radius / 16.0f);
+            vg_draw_shape(&bh, gravity_wells[i].pos, -game_time * 1.5f, (gravity_wells[i].radius / 16.0f) * 0.6f);
+        }
     }
 
     /* ── Shockwaves ─────────────────────────────────────────────── */

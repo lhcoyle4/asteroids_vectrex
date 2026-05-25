@@ -33,26 +33,17 @@ extern SDL_Window   *g_window;   /* defined in main.c */
 #include "game_data.h"
 #include "state.h"
 
-int check_void_stone(void) {
-    if (lives <= 1 && res_void_stone > 0) {
-        res_void_stone--;
-        time_stop_frames = 30;
-        player.pos = player_pos_history[(pos_history_idx + POS_HISTORY_LEN - 100) % POS_HISTORY_LEN];
-        player.invuln_timer = 2.0f;
-        return 1;
-    }
-    return 0;
-}
+
 
 /* =========== FORWARD DECLARATIONS =========== */
 
 /* Physics helpers */
 static WrapEvent wrap_position_ext(Vec2 *pos, float padding);
-static Vec2      calculate_external_forces(Vec2 pos);
+Vec2 calculate_external_forces(Vec2 pos);
 static WrapEvent update_physics(Vec2 *pos, Vec2 *vel, float delta_time,
                                 float padding, float friction);
 static int       check_collision(Vec2 p1, float r1, Vec2 p2, float r2);
-static float     distance_sq(Vec2 p1, Vec2 p2);
+float distance_sq(Vec2 p1, Vec2 p2);
 static void      on_screen_wrap(WrapEvent event);
 
 /* Persistence */
@@ -62,7 +53,7 @@ static void save_game(void);
 static void load_game(void);
 
 /* Entity helpers */
-static void spawn_particles(Vec2 pos, int count, SDL_Color color);
+void spawn_particles(Vec2 pos, int count, SDL_Color color);
 static void init_asteroid_shape(AsteroidEntity *a, int size);
 static void spawn_asteroid(Vec2 pos, int size);
 static void reset_player(void);
@@ -155,7 +146,7 @@ static WrapEvent wrap_position_ext(Vec2 *pos, float padding)
  * @param pos  The world-space position of the entity being affected.
  * @return     Accumulated force vector (units: acceleration per second).
  */
-static Vec2 calculate_external_forces(Vec2 pos)
+Vec2 calculate_external_forces(Vec2 pos)
 {
     Vec2 force = {0.0f, 0.0f};
 
@@ -267,7 +258,7 @@ static WrapEvent update_physics(Vec2 *pos, Vec2 *vel,
 /* -------------------------------------------------------------------------- */
 
 /* Forward declarations required by hook functions below. */
-static void spawn_particles(Vec2 pos, int count, SDL_Color color);
+void spawn_particles(Vec2 pos, int count, SDL_Color color);
 static void spawn_asteroid(Vec2 pos, int size);
 static void spawn_orb(Vec2 pos, int value);
 
@@ -393,7 +384,7 @@ static int check_collision(Vec2 p1, float r1, Vec2 p2, float r2)
  * @param p2  Second point.
  * @return    Squared distance (px^2).
  */
-static float distance_sq(Vec2 p1, Vec2 p2)
+float distance_sq(Vec2 p1, Vec2 p2)
 {
     float dx = p1.x - p2.x;
     float dy = p1.y - p2.y;
@@ -518,7 +509,7 @@ static void load_game(void)
  * @param count  Desired number of particles to emit.
  * @param color  RGBA tint applied to every spawned particle.
  */
-static void spawn_particles(Vec2 pos, int count, SDL_Color color)
+void spawn_particles(Vec2 pos, int count, SDL_Color color)
 {
     int spawned = 0;
     for (int i = 0; i < MAX_PARTICLES && spawned < count; i++) {

@@ -482,8 +482,8 @@ void vg_present(void)
     }
     
     SDL_SetRenderDrawBlendMode(vg_renderer, SDL_BLENDMODE_ADD);
-    int ox = persistence_tex ? shake_dx : 0;
-    int oy = persistence_tex ? shake_dy : 0;
+    int ox = persistence_tex ? (int)g_camera_offset_x : 0;
+    int oy = persistence_tex ? (int)g_camera_offset_y : 0;
     for (int i = 0; i < PHOS_TRAIL_LEN; i++) {
         if (phos_lines[i].alpha > 0.0f) {
             Uint8 a = (Uint8)(phos_lines[i].color.a * phos_lines[i].alpha);

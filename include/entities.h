@@ -402,3 +402,5 @@ typedef struct {
 
 
 #endif
+
+void spawn_particles(Vec2 pos, int count, SDL_Color color);

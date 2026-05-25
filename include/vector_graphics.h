@@ -1,25 +1,30 @@
+/*
+ * vector_graphics.h
+ *
+ * Purpose : Public interface for the FULIGIN vector-graphics renderer.
+ *           Declare types and functions used to draw retro line-based shapes
+ *           with phosphor persistence, chromatic aberration, screen shake,
+ *           monochrome mode, and bloom effects.
+ *
+ * Author  : FULIGIN contributors
+ * Date    : 2026-05-25
+ */
+
 #ifndef VECTOR_GRAPHICS_H
 #define VECTOR_GRAPHICS_H
 
 #include <SDL2/SDL.h>
 
+/* ====== TYPES ====== */
+
+/** @brief A 2-D point or vector in world space (floating-point). */
 typedef struct { float x, y; } Vec2;
+
+/** @brief A single line segment defined by two endpoints. */
 typedef struct { Vec2 p1, p2; } Line;
-typedef struct { Line *lines; int line_count; SDL_Color color; } Shape;
 
-void vg_init(SDL_Renderer *renderer, int width, int height);
-void vg_draw_shape(Shape *shape, Vec2 pos, float angle, float scale);
-void vg_draw_shape_trail(Shape *shape, Vec2 *trail_pos, float *trail_angle,
-                         int trail_len, int trail_head, float scale,
-                         float base_alpha, float decay);
-void vg_set_camera(Vec2 offset);
-void vg_set_zoom(float zoom);
-void vg_apply_persistence(float fade_amount);
-void vg_clear();
-void vg_present();
-void vg_set_shake(int dx, int dy);
-void vg_set_brightness(int level);
-void vg_set_monochrome(int enable);
-void vg_set_chromatic_aberration(float strength);
-
-#endif /* VECTOR_GRAPHICS_H */
+/**
+ * @brief A renderable shape: a collection of line segments with a base colour.
+ *
+ * All lines share the same colour; per-line colouring is not supported.
+ * The lines array must remain valid for the lifeti

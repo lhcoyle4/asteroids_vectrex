@@ -6,10 +6,10 @@
 Think glowing neon lasers slicing through the cold, dead ashes of a dying red sun.
 
 ### Visual Pillars
-- **Palette**: Pitch-black (fuligin) backgrounds contrasted with vibrant, toxic neon (cyan, magenta, acid green) and the deep crimson of a dying star (cinnabar).
-- **UI & Typography**: Minimalist, sleek, and clinical. Stylized, jagged, retro-future fonts.
-- **Graphics**: Chroma/Glassmorphism combined with classic Vector Line Art. For example, a wireframe spaceship silhouette in glowing cyan against a pure black "Urthgrid".
-- **Contrast**: The juxtaposition of ancient, holy relics and archaic terminology with fast-paced, momentum-based arcade loops.
+- **Palette**: Deep void black (fuligin) backgrounds accented by the classic *Noctis* color scheme: muted starlight cyan, dark structural blue, bright crisp white, and subdued greys.
+- **UI & Typography**: Minimalist, sleek, and unobtrusive. Clear, legible fonts that convey deep space isolation while remaining highly informative and full-featured.
+- **Graphics**: Clean, glowing vector graphics. For example, a wireframe top-down spaceship and minimal UI HUD showing upgrades and effects over a pure black "Urthgrid".
+- **Contrast**: The juxtaposition of ancient, holy relics and archaic terminology with the cold, scientific isolation of deep space exploration.
 
 ## The World & Lore
 Set in the **Latter-Day**—the final age of a dying cosmos. The sun is a swollen red cinder ("Solar Rust"), and the void is littered with the detritus of dead epochs.

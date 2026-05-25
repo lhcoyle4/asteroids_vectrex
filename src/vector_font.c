@@ -1,8 +1,27 @@
+/*
+ * vector_font.c
+ *
+ * Purpose: Custom vector/stroke font for rendering text as line segments.
+ *          Each character is defined as a set of line segments in a
+ *          normalized [0.0, 1.0] coordinate space.
+ *
+ * Author:  <placeholder>
+ * Date:    2026-05-25
+ */
+
 #include "vector_font.h"
 #include <ctype.h>
+#include <stdarg.h>
 #include <string.h>
 
+/* Maximum number of line segments per character glyph.
+ * NOTE: Characters defined with more than MAX_CHAR_LINES segments will be
+ * silently truncated to this limit. If new glyphs exceed this, increase the
+ * constant and recompile. */
 #define MAX_CHAR_LINES 8
+
+/* Character spacing: each glyph advances by (scale * FONT_CHAR_SPACING). */
+#define FONT_CHAR_SPACING 1.2f
 
 typedef struct {
     float x1, y1, x2, y2;
@@ -14,9 +33,21 @@ typedef struct {
 } FontChar;
 
 static FontChar font_chars[256];
+static FontChar g_unknown_char;   /* fallback square for unrecognized glyphs */
 static int font_initialized = 0;
 
-static void define_char(char c, int count, ...) {
+/**
+ * @brief Registers line segment data for a character in a normalized
+ *        [0.0, 1.0] coordinate space.  Called during vf_init() to populate
+ *        the global font_chars table.
+ *
+ * @param c     The character to define.
+ * @param count Number of line segments that follow (capped at MAX_CHAR_LINES).
+ * @param ...   Variadic float pairs: x1, y1, x2, y2 for each segment,
+ *              passed as doubles (C variadic promotion).
+ */
+static void define_char(char c, int count, ...)
+{
     va_list args;
     va_start(args, count);
     FontChar fc;
@@ -31,10 +62,19 @@ static void define_char(char c, int count, ...) {
     font_chars[(unsigned char)c] = fc;
 }
 
-void vf_init() {
+/**
+ * @brief Initializes the vector font system, defining all character glyphs.
+ *        Safe to call multiple times; initialization only runs once.
+ */
+void vf_init(void)
+{
     if (font_initialized) return;
 
     memset(font_chars, 0, sizeof(font_chars));
+
+    /* ------------------------------------------------------------------
+     * Uppercase letters
+     * ------------------------------------------------------------------ */
 
     // A
     define_char('A', 3,
@@ -207,6 +247,10 @@ void vf_init() {
         0.0, 1.0, 1.0, 1.0
     );
 
+    /* ------------------------------------------------------------------
+     * Digits
+     * ------------------------------------------------------------------ */
+
     // 0
     define_char('0', 5,
         0.0, 0.0, 1.0, 0.0,
@@ -263,14 +307,6 @@ void vf_init() {
         1.0, 0.0, 0.5, 1.0
     );
     // 8
-    define_char('5', 5,
-        0.0, 0.0, 1.0, 0.0,
-        1.0, 0.0, 1.0, 1.0,
-        1.0, 1.0, 0.0, 1.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.5, 1.0, 0.5
-    );
-    // Let's re-write '8' correctly (there was a typo define_char('5', ...) above)
     define_char('8', 5,
         0.0, 0.0, 1.0, 0.0,
         1.0, 0.0, 1.0, 1.0,
@@ -286,6 +322,10 @@ void vf_init() {
         0.0, 0.0, 0.0, 0.5,
         0.0, 0.5, 1.0, 0.5
     );
+
+    /* ------------------------------------------------------------------
+     * Symbols
+     * ------------------------------------------------------------------ */
 
     // -
     define_char('-', 1,
@@ -304,7 +344,7 @@ void vf_init() {
     define_char('.', 1,
         0.5, 0.9, 0.5, 0.95
     );
-    // < (lives)
+    // <
     define_char('<', 2,
         0.8, 0.2, 0.2, 0.5,
         0.2, 0.5, 0.8, 0.8
@@ -315,62 +355,9 @@ void vf_init() {
         0.8, 0.5, 0.2, 0.8
     );
 
-    font_initialized = 1;
-}
-
-void vf_draw_char(char c, float x, float y, float scale, SDL_Color color) {
-    if (!font_initialized) vf_init();
-
-    // Map character
-    c = toupper((unsigned char)c);
-    FontChar fc = font_chars[(unsigned char)c];
-    if (fc.line_count == 0 && c != ' ') {
-        // Fallback to square
-        define_char('?', 4,
-            0.0, 0.0, 1.0, 0.0,
-            1.0, 0.0, 1.0, 1.0,
-            1.0, 1.0, 0.0, 1.0,
-            0.0, 1.0, 0.0, 0.0
-        );
-        fc = font_chars['?'];
-    }
-
-    if (fc.line_count > 0) {
-        // Build a temporary shape to use vg_draw_shape
-        Line *lines = malloc(fc.line_count * sizeof(Line));
-        for (int i = 0; i < fc.line_count; i++) {
-            lines[i].p1.x = fc.lines[i].x1 - 0.5f;
-            lines[i].p1.y = fc.lines[i].y1 - 0.5f;
-            lines[i].p2.x = fc.lines[i].x2 - 0.5f;
-            lines[i].p2.y = fc.lines[i].y2 - 0.5f;
-        }
-
-        Shape s;
-        s.lines = lines;
-        s.line_count = fc.line_count;
-        s.color = color;
-
-        // Shift pos to center since we subtracted 0.5f to center characters
-        Vec2 pos = { x + scale * 0.5f, y + scale * 0.5f };
-        vg_draw_shape(&s, pos, 0.0f, scale);
-
-        free(lines);
-    }
-}
-
-void vf_draw_string(const char *str, float x, float y, float scale, SDL_Color color) {
-    float cur_x = x;
-    int len = (int)strlen(str);
-    for (int i = 0; i < len; i++) {
-        if (str[i] != ' ') {
-            vf_draw_char(str[i], cur_x, y, scale, color);
-        }
-        cur_x += scale * 1.2f; // Space between characters
-    }
-}
-
-void vf_draw_string_centered(const char *str, float x, float y, float scale, SDL_Color color) {
-    int len = (int)strlen(str);
-    float width = (len * scale * 1.2f) - (scale * 0.2f);
-    vf_draw_string(str, x - width / 2.0f, y, scale, color);
-}
+    /* Pre-build the fallback square used for unrecognized characters. */
+    FontChar unk;
+    unk.line_count = 4;
+    unk.lines[0] = (FontLine){0.0f, 0.0f, 1.0f, 0.0f};
+    unk.lines[1] = (FontLine){1.0f, 0.0f, 1.0f, 1.0f};
+    unk.lines[2] = (FontLine){1.0f, 

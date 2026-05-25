@@ -1,26 +1,55 @@
-# Build artifacts
-permadrift.exe
-src/*.o
-src/*.wasm.o
+# ─────────────────────────────────────────────────
+#  FULIGIN — .gitignore
+#  C / MinGW-w64 / SDL2 project on Windows
+# ─────────────────────────────────────────────────
 
-# WASM outputs — built by GitHub Actions CI, deployed to gh-pages
-# Do not commit index.js / index.wasm to master; CI manages them
-index.js
-index.wasm
+# ── Compiled output ──────────────────────────────
+*.exe
+*.o
+*.a
+*.dll
+*.so
+*.dylib
 
-# Emscripten / make cruft
+# ── Build artifacts ──────────────────────────────
+*.obj
 *.map
-nul
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.ncb
+*.suo
+*.user
+*.sdf
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# ── Temporary / scratch files ────────────────────
+_tmp_*.c
+*.c.bak
+*.bak
 
-# OS
+# ── Runtime data ─────────────────────────────────
+highscores.dat
+
+# ── Thirdparty binaries (SDL2, SDL2_mixer) ───────
+thirdparty/SDL2-*/i686-w64-mingw32/bin/
+thirdparty/SDL2-*/i686-w64-mingw32/lib/
+thirdparty/SDL2-*/x86_64-w64-mingw32/bin/
+thirdparty/SDL2-*/x86_64-w64-mingw32/lib/
+thirdparty/SDL2_mixer-*/i686-w64-mingw32/bin/
+thirdparty/SDL2_mixer-*/i686-w64-mingw32/lib/
+thirdparty/SDL2_mixer-*/x86_64-w64-mingw32/bin/
+thirdparty/SDL2_mixer-*/x86_64-w64-mingw32/lib/
+
+# ── Windows helper/dev scripts (not for repo) ────
+do_*.bat
+
+# ── OS / editor noise ────────────────────────────
 .DS_Store
 Thumbs.db
-
-# Game data (per-machine, not repo state)
-highscores.dat
+desktop.ini
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

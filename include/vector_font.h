@@ -1,18 +1,23 @@
+/*
+ * vector_font.h
+ *
+ * Purpose: Public interface for the vector/stroke font system.
+ *          Characters are defined as sets of line segments in a normalized
+ *          [0.0, 1.0] coordinate space and rendered via the vector graphics
+ *          layer.
+ *
+ * Author:  <placeholder>
+ * Date:    2026-05-25
+ */
+
 #ifndef VECTOR_FONT_H
 #define VECTOR_FONT_H
 
 #include "vector_graphics.h"
 
-// Initialize the vector font system
-void vf_init();
-
-// Draw a single character at (x, y) with a given scale and color
-void vf_draw_char(char c, float x, float y, float scale, SDL_Color color);
-
-// Draw a string at (x, y) with a given scale and color
-void vf_draw_string(const char *str, float x, float y, float scale, SDL_Color color);
-
-// Draw a string centered at x with a given scale and color
-void vf_draw_string_centered(const char *str, float x, float y, float scale, SDL_Color color);
-
-#endif
+/**
+ * @brief Initializes the vector font system and registers all character
+ *        glyphs.  Safe to call multiple times; work is only performed on the
+ *        first call.
+ */
+void 

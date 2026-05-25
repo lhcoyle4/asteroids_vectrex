@@ -3221,26 +3221,41 @@ void game_render() {
     { float tw = (strlen(hud_text) * 10 * 1.2f) - (10 * 0.2f);
       vf_draw_string(hud_text, xp_bar_x1 - tw, xp_bar_y - 15.0f, 10, (SDL_Color){80, 180, 80, 180}); }
 
-        // Fuel gauge
+        // ── Fuel bar (full-width, one row above XP bar) ─────────────────
         {
             float fpct = (fuel_max > 0.0f) ? (fuel_current / fuel_max) : 0.0f;
-            int fw = 120, fh = 8;
-            int fx = 42, fy = (int)(SCREEN_HEIGHT - 54);
             SDL_Color fc = fpct > 0.3f ? (SDL_Color){60,220,80,200} :
                            fpct > 0.1f ? (SDL_Color){255,200,40,200} :
                                          (SDL_Color){255,60,60,220};
-            SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(g_renderer, 30, 30, 30, 180);
-            SDL_Rect fbg = {fx-1, fy-1, fw+2, fh+2}; SDL_RenderFillRect(g_renderer, &fbg);
-            SDL_SetRenderDrawColor(g_renderer, fc.r, fc.g, fc.b, fc.a);
-            SDL_Rect ffl = {fx, fy, (int)(fw * fpct), fh}; SDL_RenderFillRect(g_renderer, &ffl);
-            char fbuf[24]; sprintf(fbuf, "FUEL %d%%", (int)(fpct*100));
-            vf_draw_string(fbuf, fx, fy - 16, 11, fc);
-            char rbuf[96];
-            sprintf(rbuf, "VS:%d AF:%d HX:%d AM:%d RK:%d", res_void_steel, res_autodyne_frags, res_hex_modules, res_ammo, res_rockets);
-            vf_draw_string(rbuf, fx, fy + fh + 4, 10, (SDL_Color){160,160,180,200});
+            float fuel_bar_y = (float)(SCREEN_HEIGHT - 44);
+            float fbx0 = xp_bar_x0, fbx1 = xp_bar_x1;
+            /* Track (dim) */
+            { Vec2 p1 = {fbx0, fuel_bar_y}, p2 = {fbx1, fuel_bar_y};
+              Line l = {p1, p2}; Shape s = {&l, 1, (SDL_Color){40,40,40,255}};
+              vg_draw_shape(&s, (Vec2){0,0}, 0.0f, 1.0f); }
+            /* Fill */
+            { Vec2 p1 = {fbx0, fuel_bar_y}, p2 = {fbx0 + (fbx1 - fbx0) * fpct, fuel_bar_y};
+              Line l = {p1, p2}; Shape s = {&l, 1, fc};
+              vg_draw_shape(&s, (Vec2){0,0}, 0.0f, 1.0f); }
+            /* Labels: "FUEL" left, "NNN%" right — mirroring XP bar style */
+            vf_draw_string("FUEL", fbx0, fuel_bar_y - 16.0f, 11, fc);
+            char fbuf[16]; sprintf(fbuf, "%d%%", (int)(fpct * 100));
+            { float tw = (strlen(fbuf) * 10 * 1.2f) - (10 * 0.2f);
+              vf_draw_string(fbuf, fbx1 - tw, fuel_bar_y - 15.0f, 10, fc); }
+        }
+
+        // ── Resource readout (centered, above the two bars) ───────────────
+        {
+            char rbuf[128];
+            sprintf(rbuf, "VS:%d  AF:%d  HX:%d  AM:%d  RK:%d  CB:%d  IS:%d  CL:%d  MD:%d",
+                res_void_steel, res_autodyne_frags, res_hex_modules,
+                res_ammo, res_rockets, res_contraband,
+                res_isotopes, res_coolant, res_medicinals);
+            vf_draw_string_centered(rbuf, SCREEN_WIDTH / 2.0f,
+                (float)(SCREEN_HEIGHT - 68), 9, (SDL_Color){140,160,180,180});
             if (res_contraband > 0) {
-                vf_draw_string("! CONTRABAND", fx, fy + fh + 16, 10, (SDL_Color){255,80,80,220});
+                vf_draw_string_centered("! CONTRABAND ABOARD", SCREEN_WIDTH / 2.0f,
+                    (float)(SCREEN_HEIGHT - 80), 9, (SDL_Color){255,80,80,200});
             }
         }
 

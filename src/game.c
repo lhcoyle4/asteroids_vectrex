@@ -10,6 +10,9 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#ifndef M_PI_2
+#define M_PI_2 1.57079632679489661923
+#endif
 
 extern SDL_Window *g_window;
 
@@ -46,6 +49,7 @@ typedef enum {
     STATE_UPGRADE_SELECT,
     STATE_HIGHSCORES,
     STATE_SETTINGS,
+    STATE_KEYBINDS,
     STATE_ATTRACT_INSTRUCTIONS,
     STATE_ATTRACT_GAMEPLAY
 } GameState;
@@ -278,9 +282,40 @@ static int menu_selection = 0; // 0: Start, 1: High Scores, 2: Settings
 static int settings_volume = 100;
 static int settings_fullscreen = 0;
 static int settings_glow = 3; // 0=OFF, 1=LOW, 2=MED, 3=HIGH, 4=MAX
+
+// Extended settings
+static int settings_tab = 0;       // 0=VIDEO 1=AUDIO 2=GAMEPLAY 3=CONTROLS
+static int settings_sfx_vol = 100;
+static int settings_music_vol = 100;
+static int settings_screen_shake = 1;
+static int settings_show_fps = 0;
+static int settings_mouse_aim = 1;
+static int settings_crosshair_style = 1; // 0=OFF 1=CROSS 2=DOT
+static int settings_autofire = 0;
+static int settings_controller_deadzone = 1; // 0=LOW 1=MED 2=HIGH
+static int settings_invert_y = 0;
+
+// FPS counter
+static float fps_accum = 0.0f;
+static int fps_frame_count = 0;
+static int fps_display_val = 0;
+
+// Controller
+static SDL_GameController *g_controller = NULL;
+
+// Keybinds
+typedef enum { KB_ROTATE_LEFT=0, KB_ROTATE_RIGHT, KB_THRUST, KB_FIRE, KB_PAUSE, KB_HYPERSPACE, KB_COUNT } KeyAction;
+static SDL_Scancode keybinds[KB_COUNT] = { SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_UP, SDL_SCANCODE_SPACE, SDL_SCANCODE_ESCAPE, SDL_SCANCODE_RETURN };
+static const char* kb_action_names[KB_COUNT] = { "ROTATE LEFT", "ROTATE RIGHT", "THRUST", "FIRE", "PAUSE", "HYPERSPACE" };
+static int rebinding_action = -1; // -1 = not rebinding
+static int keybind_selection = 0;
+
 static float god_mode_msg_timer = 0.0f;
 static int is_attract_ai = 0;
 static float idle_timer = 0.0f;
+static Vec2 mirror_pos = {0, 0};
+static float mirror_angle = 0.0f;
+static int mirror_active_flag = 0;
 #define ATTRACT_DELAY 10.0f
 
 static int score = 0;
@@ -318,11 +353,11 @@ static int player_xp = 0;
 static int xp_threshold = 100;
 
 static const char* upgrade_names[] = {
-    "TRIPLE SHOT", "BOUNCY BULLETS", "SHIELD GENERATOR", "RAPID FIRE", "PIERCING ROUNDS", "ENGINE OVERCLOCK",
-    "SIZE DOWN", "HOMING SHOTS", "GHOST SIGHT", "VOID ROUNDS", "TIME WARP", "ORB MAGNET", "OVERCHARGE",
-    "MIRROR IMAGE", "REAR GUN", "ORBITAL MINE", "CRIT CHANCE", "HEALTH BOOST", "THRUST TRAIL", "SPLIT SHOT",
-    "VORTEX GRENADE", "PHASE SHIFT", "AUTO TURRET", "NOVA EXPLOSION", "XP BOOST", "ARMOR PLATE",
-    "THERMAL HULL", "SINGULARITY DISPLACER", "SINGULARITY WHIP", "RESONANCE CASCADE"
+    "TRISKELION BURST", "VOID RICOCHET", "ETHER SHROUD", "OVERCLOCK", "ICHOROUS ROUNDS", "AUTODYNE BOOST",
+    "SMALL FORM", "SEEKER ICHORS", "PALE SIGHT", "CORRUPTION ROUNDS", "TEMPORAL FOLD", "ORB MAGNET", "SOLAR FURY",
+    "WRAITH TWIN", "AFT CANNON", "ORBIT MINE", "CRIT CHANCE", "RESTORED VIGOR", "BANE TRAIL", "FISSION SHOT",
+    "VORTEX GRENADE", "PHASE SHIFT", "AUTO TURRET", "NOVA SHELL", "CHRONICLE BOOST", "OSSIFIED HULL",
+    "THERMAL HULL", "RIFT DISPLACER", "BANE WHIP", "RESONANCE CASCADE"
 };
 
 static const char* difficulty_names[] = {
@@ -330,14 +365,14 @@ static const char* difficulty_names[] = {
 };
 
 static const char* upgrade_descs[] = {
-    "Fire 3 bullets in a spread", "Bullets bounce off screen edges", "One-time shield per life", "30% faster fire rate",
-    "Bullets pass through targets", "20% faster movement", "Reduces ship size", "Bullets track targets",
-    "See enemies through the void", "Bullets deal extra corruption", "Slow down time temporarily", "Attract XP orbs",
-    "Extra damage when at full health", "Create a decoy ship", "Fire from the rear of the ship", "Mines orbit your ship",
-    "Chance for double damage", "Gain an extra life", "Engine leaves damaging trail", "Bullets split on impact",
-    "Grenade that pulls enemies", "Briefly phase through damage", "Automated defense turret", "Explosion on ship hit",
-    "Gain 50% more XP", "Reduced damage from collisions",
-    "Ram asteroids for massive damage", "Double tap thrust to warp", "Engine trail damages enemies", "Bullets cause shockwaves"
+    "Three-bolt spread from the prow", "Bolts rebound off the void's edge", "One absorption per life", "30% faster discharge",
+    "Bolts pierce through Void Stones", "20% faster Autodyne thrust", "Reduce ship collision radius", "Bolts seek the nearest stone",
+    "Reveal hidden Remnant threats", "Bolts corrode on contact", "Briefly slow the drift of time", "Draw chronicle orbs to you",
+    "Rage boils when hull is intact", "A phantom twin follows your path", "Discharge from the aft thruster", "Mines orbit the hull",
+    "Random bolts strike twice", "The Autarch grants another life", "Thruster wash scorches Void Stones", "Bolts split on first impact",
+    "Pulls Void Stones into ruin", "Pass through one killing blow", "An ancient turret follows you", "Hull detonates on impact",
+    "Harvest 50% more chronicle", "Ancient plating resists damage",
+    "Ram Void Stones at full thrust", "Double-tap thrust to rift-jump", "Thruster trail scorches the drift", "Bolts unleash shockwaves"
 };
 
 
@@ -540,11 +575,11 @@ static void load_high_scores() {
         fclose(f);
     } else {
         // Default high scores
-        strcpy(high_scores[0].initials, "AST"); high_scores[0].score = 10000;
-        strcpy(high_scores[1].initials, "DIR"); high_scores[1].score = 8000;
-        strcpy(high_scores[2].initials, "VEC"); high_scores[2].score = 6000;
-        strcpy(high_scores[3].initials, "PIL"); high_scores[3].score = 4000;
-        strcpy(high_scores[4].initials, "FLY"); high_scores[4].score = 2000;
+        strcpy(high_scores[0].initials, "PDR"); high_scores[0].score = 10000;
+        strcpy(high_scores[1].initials, "AUT"); high_scores[1].score = 8000;
+        strcpy(high_scores[2].initials, "SIB"); high_scores[2].score = 6000;
+        strcpy(high_scores[3].initials, "VEX"); high_scores[3].score = 4000;
+        strcpy(high_scores[4].initials, "ORM"); high_scores[4].score = 2000;
     }
 }
 
@@ -913,6 +948,7 @@ static void start_new_game() {
     player_upgrades.xp_mult = 1.0f;
     player_upgrades.mirror_image = 0;
     player_upgrades.phase_shift = 0;
+    mirror_active_flag = 0;
 
     // Clear mines, powerups, rift, screen shake
     for (int i = 0; i < MAX_MINES; i++) mines[i].active = 0;
@@ -968,6 +1004,61 @@ void game_handle_input(SDL_Event *event) {
         return;
     }
 
+    if (event->type == SDL_CONTROLLERDEVICEADDED) {
+        if (!g_controller) g_controller = SDL_GameControllerOpen(event->cdevice.which);
+        return;
+    }
+    if (event->type == SDL_CONTROLLERDEVICEREMOVED) {
+        if (g_controller) { SDL_GameControllerClose(g_controller); g_controller = NULL; }
+        return;
+    }
+
+    if (event->type == SDL_CONTROLLERBUTTONDOWN) {
+        SDL_GameControllerButton btn = event->cbutton.button;
+        if (game_state == STATE_TITLE) {
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_UP)    menu_selection = (menu_selection + 2) % 3;
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN)  menu_selection = (menu_selection + 1) % 3;
+            if (btn == SDL_CONTROLLER_BUTTON_A || btn == SDL_CONTROLLER_BUTTON_START) {
+                if (menu_selection == 0) start_new_game();
+                else if (menu_selection == 1) game_state = STATE_HIGHSCORES;
+                else if (menu_selection == 2) { game_state = STATE_SETTINGS; menu_selection = 0; settings_tab = 0; }
+            }
+            if (btn == SDL_CONTROLLER_BUTTON_B) { SDL_Event qe; qe.type = SDL_QUIT; SDL_PushEvent(&qe); }
+        } else if (game_state == STATE_PLAYING) {
+            if (btn == SDL_CONTROLLER_BUTTON_START) game_set_paused(1);
+            if (btn == SDL_CONTROLLER_BUTTON_Y) trigger_hyperspace();
+        } else if (game_state == STATE_PAUSED) {
+            if (btn == SDL_CONTROLLER_BUTTON_START || btn == SDL_CONTROLLER_BUTTON_B) game_set_paused(0);
+        } else if (game_state == STATE_SETTINGS) {
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_UP)    menu_selection = (menu_selection == 0) ? 0 : menu_selection - 1;
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN)  menu_selection++;
+            if (btn == SDL_CONTROLLER_BUTTON_LEFTSHOULDER)  settings_tab = (settings_tab + 3) % 4;
+            if (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) settings_tab = (settings_tab + 1) % 4;
+            if (btn == SDL_CONTROLLER_BUTTON_B || btn == SDL_CONTROLLER_BUTTON_START) { game_state = STATE_TITLE; menu_selection = 0; }
+        } else if (game_state == STATE_KEYBINDS) {
+            if (btn == SDL_CONTROLLER_BUTTON_B) { game_state = STATE_SETTINGS; menu_selection = 0; }
+        } else if (game_state == STATE_GAMEOVER) {
+            if (btn == SDL_CONTROLLER_BUTTON_A || btn == SDL_CONTROLLER_BUTTON_START) {
+                int is_hs = 0;
+                for (int i = 0; i < 5; i++) if (score > high_scores[i].score) { is_hs = 1; new_high_score_idx = i; break; }
+                if (is_hs) { game_state = STATE_NEW_HIGHSCORE; strcpy(temp_initials, "A  "); cur_initial_char = 0; }
+                else game_state = STATE_HIGHSCORES;
+            }
+        } else if (game_state == STATE_HIGHSCORES) {
+            if (btn == SDL_CONTROLLER_BUTTON_B || btn == SDL_CONTROLLER_BUTTON_START) game_state = STATE_TITLE;
+        } else if (game_state == STATE_UPGRADE_SELECT) {
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_LEFT || btn == SDL_CONTROLLER_BUTTON_DPAD_UP) selected_option = (selected_option + 2) % 3;
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT || btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN) selected_option = (selected_option + 1) % 3;
+            if (btn == SDL_CONTROLLER_BUTTON_A) {
+                apply_upgrade(upgrade_options[selected_option]);
+                if (wave_cleared_pending) { wave_cleared_pending = 0; start_next_level(); }
+                game_state = is_attract_ai ? STATE_ATTRACT_GAMEPLAY : STATE_PLAYING;
+                if (ufo.active) audio_play(SFX_UFO_LOOP);
+            }
+        }
+        return;
+    }
+
     if (event->type == SDL_KEYDOWN) {
         if (game_state == STATE_ATTRACT_GAMEPLAY) {
             game_state = STATE_TITLE;
@@ -989,7 +1080,10 @@ void game_handle_input(SDL_Event *event) {
             if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
                 if (menu_selection == 0) start_new_game();
                 else if (menu_selection == 1) game_state = STATE_HIGHSCORES;
-                else if (menu_selection == 2) game_state = STATE_SETTINGS;
+                else if (menu_selection == 2) { game_state = STATE_SETTINGS; menu_selection = 0; settings_tab = 0; }
+            }
+            if (event->key.keysym.sym == SDLK_ESCAPE) {
+                SDL_Event qe; qe.type = SDL_QUIT; SDL_PushEvent(&qe);
             }
         } else if (game_state == STATE_PLAYING) {
             if (event->key.keysym.sym == SDLK_ESCAPE) {
@@ -1009,39 +1103,82 @@ void game_handle_input(SDL_Event *event) {
                 audio_stop(SFX_THRUST);
                 audio_stop(SFX_UFO_LOOP);
             }
+        } else if (game_state == STATE_KEYBINDS) {
+            if (rebinding_action >= 0) {
+                // Any key press assigns it
+                SDL_Scancode sc = event->key.keysym.scancode;
+                if (sc != SDL_SCANCODE_ESCAPE) {
+                    keybinds[rebinding_action] = sc;
+                }
+                rebinding_action = -1;
+            } else {
+                if (event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w)
+                    keybind_selection = (keybind_selection + KB_COUNT - 1) % KB_COUNT;
+                if (event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s)
+                    keybind_selection = (keybind_selection + 1) % KB_COUNT;
+                if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE)
+                    rebinding_action = keybind_selection;
+                if (event->key.keysym.sym == SDLK_ESCAPE)
+                    { game_state = STATE_SETTINGS; menu_selection = 0; settings_tab = 3; rebinding_action = -1; }
+            }
         } else if (game_state == STATE_SETTINGS) {
-            if (event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w) menu_selection = (menu_selection + 3) % 4;
-            if (event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) menu_selection = (menu_selection + 1) % 4;
-            
-            if (menu_selection == 0) { // Volume
-                if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) {
-                    if (settings_volume > 0) { settings_volume -= 10; audio_set_volume(settings_volume); }
-                } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
-                    if (settings_volume < 100) { settings_volume += 10; audio_set_volume(settings_volume); }
-                }
-            } else if (menu_selection == 1) { // Resolution (Fullscreen)
-                if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
-                    settings_fullscreen = !settings_fullscreen;
-                    SDL_SetWindowFullscreen(g_window, settings_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-                }
-            } else if (menu_selection == 2) { // Difficulty
-                if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) {
-                    difficulty = (difficulty + 3) % 4;
-                } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
-                    difficulty = (difficulty + 1) % 4;
-                }
-            } else if (menu_selection == 3) { // Phosphor Glow
-                if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) {
-                    settings_glow = (settings_glow + 4) % 5;
-                } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
-                    settings_glow = (settings_glow + 1) % 5;
-                }
-            }
+            // Tab switching with Q/E
+            if (event->key.keysym.sym == SDLK_q) { settings_tab = (settings_tab + 3) % 4; menu_selection = 0; }
+            if (event->key.keysym.sym == SDLK_e) { settings_tab = (settings_tab + 1) % 4; menu_selection = 0; }
 
-            if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_ESCAPE) {
-                game_state = STATE_TITLE;
-                menu_selection = 0;
+            int tab_item_count[] = {4, 3, 3, 4}; // items per tab
+            int n = tab_item_count[settings_tab];
+            if (event->key.keysym.sym == SDLK_UP   || event->key.keysym.sym == SDLK_w) menu_selection = (menu_selection + n - 1) % n;
+            if (event->key.keysym.sym == SDLK_DOWN  || event->key.keysym.sym == SDLK_s) menu_selection = (menu_selection + 1) % n;
+
+            if (settings_tab == 0) { // VIDEO
+                if (menu_selection == 0) { // Fullscreen
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
+                        settings_fullscreen = !settings_fullscreen;
+                        SDL_SetWindowFullscreen(g_window, settings_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                    }
+                } else if (menu_selection == 1) { // Phosphor Glow
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) settings_glow = (settings_glow + 4) % 5;
+                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_glow = (settings_glow + 1) % 5;
+                } else if (menu_selection == 2) { // Show FPS
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_show_fps = !settings_show_fps;
+                } else if (menu_selection == 3) { // Screen Shake
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_screen_shake = !settings_screen_shake;
+                }
+            } else if (settings_tab == 1) { // AUDIO
+                if (menu_selection == 0) { // Master Volume
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) { if (settings_volume > 0) { settings_volume -= 10; audio_set_volume(settings_volume); } }
+                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) { if (settings_volume < 100) { settings_volume += 10; audio_set_volume(settings_volume); } }
+                } else if (menu_selection == 1) { // SFX Volume
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) { if (settings_sfx_vol > 0) settings_sfx_vol -= 10; }
+                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) { if (settings_sfx_vol < 100) settings_sfx_vol += 10; }
+                } else if (menu_selection == 2) { // Music Volume
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) { if (settings_music_vol > 0) settings_music_vol -= 10; }
+                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) { if (settings_music_vol < 100) settings_music_vol += 10; }
+                }
+            } else if (settings_tab == 2) { // GAMEPLAY
+                if (menu_selection == 0) { // Difficulty
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) difficulty = (difficulty + 3) % 4;
+                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) difficulty = (difficulty + 1) % 4;
+                } else if (menu_selection == 1) { // Autofire
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_autofire = !settings_autofire;
+                } else if (menu_selection == 2) { // Invert Y (mouse)
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_invert_y = !settings_invert_y;
+                }
+            } else if (settings_tab == 3) { // CONTROLS
+                if (menu_selection == 0) { // Mouse Aim
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_mouse_aim = !settings_mouse_aim;
+                } else if (menu_selection == 1) { // Crosshair
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) settings_crosshair_style = (settings_crosshair_style + 2) % 3;
+                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_crosshair_style = (settings_crosshair_style + 1) % 3;
+                } else if (menu_selection == 2) { // Controller deadzone
+                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) settings_controller_deadzone = (settings_controller_deadzone + 2) % 3;
+                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_controller_deadzone = (settings_controller_deadzone + 1) % 3;
+                } else if (menu_selection == 3) { // Keybinds
+                    if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) { game_state = STATE_KEYBINDS; keybind_selection = 0; rebinding_action = -1; }
+                }
             }
+            if (event->key.keysym.sym == SDLK_ESCAPE) { game_state = STATE_TITLE; menu_selection = 0; }
         } else if (game_state == STATE_GAMEOVER) {
             if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
                 // Check if high score achieved
@@ -1127,6 +1264,16 @@ void game_handle_input(SDL_Event *event) {
 
 
 void game_update(float delta_time) {
+    fps_accum += delta_time;
+    fps_frame_count++;
+    if (fps_accum >= 0.5f) {
+        fps_display_val = (int)(fps_frame_count / fps_accum);
+        fps_accum = 0.0f; fps_frame_count = 0;
+    }
+
+    // Hide cursor during play if mouse aim active
+    SDL_ShowCursor((game_state == STATE_PLAYING && settings_mouse_aim) ? SDL_DISABLE : SDL_ENABLE);
+
     if (game_state == STATE_PLAYING || game_state == STATE_ATTRACT_GAMEPLAY) {
         if (player.active) {
             float target_cam_x = player.pos.x - SCREEN_WIDTH / 2.0f;
@@ -1376,27 +1523,41 @@ void game_update(float delta_time) {
             }
         } else {
             const Uint8 *keys = SDL_GetKeyboardState(NULL);
-            if (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A]) {
+            if (keys[keybinds[KB_ROTATE_LEFT]] || keys[SDL_SCANCODE_A]) {
                 player.angle -= ROTATION_SPEED * delta_time;
             }
-            if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) {
+            if (keys[keybinds[KB_ROTATE_RIGHT]] || keys[SDL_SCANCODE_D]) {
                 player.angle += ROTATION_SPEED * delta_time;
             }
-            
+
+            // Controller left-stick rotation
+            if (g_controller) {
+                int16_t lx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTX);
+                float deadzone = (float[]){0.1f, 0.2f, 0.35f}[settings_controller_deadzone] * 32767.0f;
+                if (fabsf((float)lx) > deadzone)
+                    player.angle += ((float)lx / 32767.0f) * ROTATION_SPEED * delta_time * 2.5f;
+                int16_t lt = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+                int16_t rt = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+                if (lt > 8000 || SDL_GameControllerGetButton(g_controller, SDL_CONTROLLER_BUTTON_A)) thrust_key_down = 1;
+                if (rt > 8000 || SDL_GameControllerGetButton(g_controller, SDL_CONTROLLER_BUTTON_X)) fire_key_down = 1;
+            }
+
             int mx, my;
             Uint32 mouse_buttons = SDL_GetMouseState(&mx, &my);
-            
-            static int last_mx = -1, last_my = -1;
-            if (mx != last_mx || my != last_my) {
-                float dx = (float)mx - player.pos.x;
-                float dy = (float)my - player.pos.y;
-                player.angle = atan2f(dy, dx) + (float)M_PI / 2.0f;
-                last_mx = mx;
-                last_my = my;
+
+            // Always recalculate — camera may have moved even if mouse didn't
+            if (settings_mouse_aim) {
+                float spx = player.pos.x - camera_pos.x;
+                float spy = player.pos.y - camera_pos.y;
+                float dx = (float)mx - spx;
+                float dy = (float)my - spy;
+                if (dx*dx + dy*dy > 9.0f) {
+                    player.angle = atan2f(dy, dx) + (float)M_PI_2;
+                }
             }
-            
-            thrust_key_down = (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W] || (mouse_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)));
-            fire_key_down = (keys[SDL_SCANCODE_SPACE] || (mouse_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)));
+
+            thrust_key_down = (keys[keybinds[KB_THRUST]] || keys[SDL_SCANCODE_W] || (settings_mouse_aim && (mouse_buttons & SDL_BUTTON(SDL_BUTTON_LEFT))));
+            fire_key_down   = (keys[keybinds[KB_FIRE]]   || keys[SDL_SCANCODE_SPACE] || (settings_mouse_aim && (mouse_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT))));
         }
 
         static Uint32 last_thrust_tap = 0;
@@ -1434,6 +1595,7 @@ void game_update(float delta_time) {
         if (fire_cooldown_timer > 0.0f) {
             fire_cooldown_timer -= delta_time;
         }
+        if (settings_autofire && fire_cooldown_timer <= 0.0f) fire_key_down = 1;
 
         // Record trail
         player.trail_pos[player.trail_head] = player.pos;
@@ -1448,6 +1610,16 @@ void game_update(float delta_time) {
         player.vel.y *= powf(FRICTION, delta_time * 60.0f);
         player.pos.x += player.vel.x * delta_time;
         player.pos.y += player.vel.y * delta_time;
+
+        // Mirror image: phantom twin orbits 200px behind the player
+        if (player_upgrades.mirror_image && player.active) {
+            mirror_active_flag = 1;
+            mirror_pos.x = player.pos.x - sinf(player.angle) * 200.0f;
+            mirror_pos.y = player.pos.y + cosf(player.angle) * 200.0f;
+            mirror_angle = player.angle;
+        } else if (!player_upgrades.mirror_image) {
+            mirror_active_flag = 0;
+        }
 
         if (fire_key_down && fire_cooldown_timer <= 0.0f) {
             int bullets_to_fire = player_upgrades.triple_shot ? 3 : 1;
@@ -1486,8 +1658,30 @@ void game_update(float delta_time) {
                         bullets[i].vel.y += player.vel.y * 0.3f;
                         
                         bullets[i].color = (SDL_Color){255, 255, 255, 255};
-                        bullets[i].is_homing = 0;
+                        bullets[i].is_homing = player_upgrades.homing ? 1 : 0;
                         
+                        break;
+                    }
+                }
+            }
+            // Rear gun fires a bullet from the ship's aft
+            if (player_upgrades.rear_gun) {
+                for (int i = 0; i < MAX_BULLETS; i++) {
+                    if (!bullets[i].active) {
+                        bullets[i].active = 1;
+                        bullets[i].life = BULLET_LIFE;
+                        bullets[i].bounces = 0;
+                        bullets[i].pierces = 0;
+                        float rear_angle = player.angle + 3.14159265f;
+                        float rear_x = player.pos.x - sinf(player.angle) * 12.0f;
+                        float rear_y = player.pos.y + cosf(player.angle) * 12.0f;
+                        bullets[i].pos = (Vec2){rear_x, rear_y};
+                        bullets[i].trail_head = 0;
+                        for (int t = 0; t < PHOS_TRAIL_LEN; t++) { bullets[i].trail_pos[t] = bullets[i].pos; bullets[i].trail_ang[t] = 0.0f; }
+                        bullets[i].vel.x = sinf(rear_angle) * BULLET_SPEED * player_upgrades.bullet_speed_mult + player.vel.x * 0.3f;
+                        bullets[i].vel.y = -cosf(rear_angle) * BULLET_SPEED * player_upgrades.bullet_speed_mult + player.vel.y * 0.3f;
+                        bullets[i].color = (SDL_Color){255, 180, 80, 255};
+                        bullets[i].is_homing = 0;
                         break;
                     }
                 }
@@ -1585,6 +1779,30 @@ void game_update(float delta_time) {
                 Vec2 ext_f = calculate_external_forces(bullets[i].pos);
                 bullets[i].vel.x += ext_f.x * delta_time;
                 bullets[i].vel.y += ext_f.y * delta_time;
+
+                // Homing bullet steering
+                if (bullets[i].is_homing) {
+                    float min_dist_sq = 1e18f;
+                    Vec2 home_target = bullets[i].pos;
+                    for (int ha = 0; ha < MAX_ASTEROIDS; ha++) {
+                        if (!asteroids[ha].active) continue;
+                        float hdx = asteroids[ha].pos.x - bullets[i].pos.x;
+                        float hdy = asteroids[ha].pos.y - bullets[i].pos.y;
+                        float hd = hdx*hdx + hdy*hdy;
+                        if (hd < min_dist_sq) { min_dist_sq = hd; home_target = asteroids[ha].pos; }
+                    }
+                    float hdx = home_target.x - bullets[i].pos.x;
+                    float hdy = home_target.y - bullets[i].pos.y;
+                    float hdist = sqrtf(hdx*hdx + hdy*hdy);
+                    if (hdist > 1.0f) {
+                        float homing_str = 280.0f;
+                        bullets[i].vel.x += (hdx/hdist) * homing_str * delta_time;
+                        bullets[i].vel.y += (hdy/hdist) * homing_str * delta_time;
+                        float bspd = sqrtf(bullets[i].vel.x*bullets[i].vel.x + bullets[i].vel.y*bullets[i].vel.y);
+                        float max_bspd = BULLET_SPEED * player_upgrades.bullet_speed_mult;
+                        if (bspd > max_bspd) { bullets[i].vel.x = bullets[i].vel.x/bspd*max_bspd; bullets[i].vel.y = bullets[i].vel.y/bspd*max_bspd; }
+                    }
+                }
 
                 bullets[i].pos.x += bullets[i].vel.x * delta_time;
                 bullets[i].pos.y += bullets[i].vel.y * delta_time;
@@ -1871,6 +2089,29 @@ void game_update(float delta_time) {
                 if (!player_upgrades.piercing) {
                     bullets[b].active = 0;
                 }
+                // Split shot: spawn 2 fragment bullets on impact
+                if (player_upgrades.split_shot) {
+                    float ba = atan2f(bullets[b].vel.x, -bullets[b].vel.y);
+                    float bspd = sqrtf(bullets[b].vel.x*bullets[b].vel.x + bullets[b].vel.y*bullets[b].vel.y);
+                    for (int ss = 0; ss < 2; ss++) {
+                        for (int si = 0; si < MAX_BULLETS; si++) {
+                            if (!bullets[si].active) {
+                                bullets[si].active = 1;
+                                bullets[si].life = BULLET_LIFE * 0.45f;
+                                bullets[si].bounces = 0; bullets[si].pierces = 0;
+                                float sa = ba + (ss == 0 ? 0.65f : -0.65f);
+                                bullets[si].pos = asteroids[a].pos;
+                                bullets[si].trail_head = 0;
+                                for (int t = 0; t < PHOS_TRAIL_LEN; t++) { bullets[si].trail_pos[t] = bullets[si].pos; bullets[si].trail_ang[t] = 0.0f; }
+                                bullets[si].vel.x = sinf(sa) * bspd * 0.75f;
+                                bullets[si].vel.y = -cosf(sa) * bspd * 0.75f;
+                                bullets[si].color = (SDL_Color){255, 200, 80, 255};
+                                bullets[si].is_homing = 0;
+                                break;
+                            }
+                        }
+                    }
+                }
                 asteroids[a].active = 0;
                 wave_asteroids_destroyed++;
                 
@@ -2063,13 +2304,24 @@ void game_update(float delta_time) {
                         player.invuln_timer = 2.0f;
                         audio_play(SFX_EXPLOSION_MD);
                         ufo_bullets[b].active = 0;
+                    } else if (player_upgrades.phase_shift) {
+                        player_upgrades.phase_shift = 0;
+                        player.invuln_timer = 3.5f;
+                        audio_play(SFX_EXPLOSION_MD);
+                        ufo_bullets[b].active = 0;
+                        spawn_particles(player.pos, 20, (SDL_Color){100, 200, 255, 255});
+                    } else if (mirror_active_flag && distance_sq(ufo_bullets[b].pos, mirror_pos) < 30.0f * 30.0f) {
+                        mirror_active_flag = 0;
+                        player_upgrades.mirror_image = 0;
+                        ufo_bullets[b].active = 0;
+                        spawn_particles(mirror_pos, 20, (SDL_Color){100, 180, 255, 255});
                     } else {
                         ufo_bullets[b].active = 0;
                         player.active = 0;
                         audio_play(SFX_EXPLOSION_LG);
                         audio_stop(SFX_THRUST);
                         spawn_particles(player.pos, 35, (SDL_Color){255, 200, 100, 255});
-                        
+
                         lives--;
                         if (lives <= 0) {
                             game_state = STATE_GAMEOVER;
@@ -2086,7 +2338,7 @@ void game_update(float delta_time) {
 void game_render() {
     SDL_Color main_color = {220, 240, 255, 255}; // Glowing cool white/light cyan phosphor
     
-    // Apply Vectrex persistence effect
+    // Apply phosphor persistence effect
     float glow_values[] = {1.0f, 0.95f, 0.90f, 0.82f, 0.70f};
     vg_apply_persistence(glow_values[settings_glow]); // fades slightly each frame
 
@@ -2253,6 +2505,13 @@ void game_render() {
         }
     }
 
+    // Draw mirror image (phantom twin)
+    if (mirror_active_flag && player.active) {
+        SDL_Color mc = {100, 180, 255, 120};
+        Shape ms = {ship_lines, 5, mc};
+        vg_draw_shape(&ms, mirror_pos, mirror_angle, player.radius * player_upgrades.size_mult * 0.9f);
+    }
+
     // Score pop floaters (drawn in world coordinates)
     for (int i = 0; i < MAX_SCORE_FLOATS; i++) {
         if (score_floats[i].active) {
@@ -2289,7 +2548,7 @@ void game_render() {
     Vec2 b_p1 = {40, SCREEN_HEIGHT - 22}, b_p2 = {SCREEN_WIDTH - 40, SCREEN_HEIGHT - 22};
     Line b_l1 = {b_p1, b_p2}; Shape b_s1 = {&b_l1, 1, (SDL_Color){50, 50, 50, 255}}; vg_draw_shape(&b_s1, (Vec2){0,0}, 0.0f, 1.0f);
     // XP label
-    sprintf(hud_text, "XP"); vf_draw_string(hud_text, SCREEN_WIDTH - 60, SCREEN_HEIGHT - 28, 10, (SDL_Color){80, 180, 80, 255});
+    sprintf(hud_text, "CHR"); vf_draw_string(hud_text, SCREEN_WIDTH - 70, SCREEN_HEIGHT - 28, 10, (SDL_Color){80, 180, 80, 255});
     // Top score
     sprintf(hud_text, "%05d", high_scores[0].score > score ? high_scores[0].score : score);
     vf_draw_string_centered(hud_text, SCREEN_WIDTH/2.0f, 25, 15, (SDL_Color){180, 220, 255, 180});
@@ -2342,17 +2601,20 @@ void game_render() {
 
     if (game_state == STATE_TITLE) {
         static float title_timer = 0.0f; title_timer += 0.016f;
-        vf_draw_string_centered("ASTEROIDS", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 160, 55 * (1.0f + 0.05f * sinf(title_timer * 2.0f)), main_color);
-        vf_draw_string_centered("V E C T R E X   E D I T I O N", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 70, 18, (SDL_Color){100, 200, 255, 255});
+        vf_draw_string_centered("PERMADRIFT", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 160, 55 * (1.0f + 0.05f * sinf(title_timer * 2.0f)), main_color);
+        vf_draw_string_centered("D R I F T I N G   A T   T H E   W O R L D S   E N D", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 70, 14, (SDL_Color){100, 180, 255, 200});
         SDL_Color c1 = (menu_selection == 0) ? (SDL_Color){255, 255, 100, 255} : main_color;
         SDL_Color c2 = (menu_selection == 1) ? (SDL_Color){255, 255, 100, 255} : main_color;
         SDL_Color c3 = (menu_selection == 2) ? (SDL_Color){255, 255, 100, 255} : main_color;
-        vf_draw_string_centered("START GAME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 50, 22, c1);
-        vf_draw_string_centered("HIGH SCORES", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 100, 22, c2);
+        vf_draw_string_centered("BEGIN DRIFT", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 50, 22, c1);
+        vf_draw_string_centered("DRIFTER ANNALS", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 100, 22, c2);
         vf_draw_string_centered("SETTINGS", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 150, 22, c3);
-        if (menu_selection == 0) vf_draw_string(">", SCREEN_WIDTH/2.0f - 160, SCREEN_HEIGHT/2.0f + 50, 22, c1);
-        if (menu_selection == 1) vf_draw_string(">", SCREEN_WIDTH/2.0f - 170, SCREEN_HEIGHT/2.0f + 100, 22, c2);
-        if (menu_selection == 2) vf_draw_string(">", SCREEN_WIDTH/2.0f - 140, SCREEN_HEIGHT/2.0f + 150, 22, c3);
+        { float tw = (strlen("BEGIN DRIFT") * 22 * 1.2f) - (22 * 0.2f);
+          if (menu_selection == 0) vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, SCREEN_HEIGHT/2.0f + 50, 22, c1); }
+        { float tw = (strlen("DRIFTER ANNALS") * 22 * 1.2f) - (22 * 0.2f);
+          if (menu_selection == 1) vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, SCREEN_HEIGHT/2.0f + 100, 22, c2); }
+        { float tw = (strlen("SETTINGS") * 22 * 1.2f) - (22 * 0.2f);
+          if (menu_selection == 2) vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, SCREEN_HEIGHT/2.0f + 150, 22, c3); }
     } else if (game_state == STATE_PAUSED) {
         vf_draw_string_centered("PAUSED", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 120, 45, (SDL_Color){255, 255, 255, 255});
         vf_draw_string_centered("S: SAVE GAME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 20, 22, main_color);
@@ -2360,60 +2622,125 @@ void game_render() {
         vf_draw_string_centered("Q: QUIT TO MENU", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 80, 22, main_color);
         vf_draw_string_centered("PRESS ESC TO RESUME", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 160, 16, (SDL_Color){180, 180, 180, 255});
     } else if (game_state == STATE_SETTINGS) {
-        vf_draw_string_centered("SETTINGS", SCREEN_WIDTH/2.0f, 100, 35, (SDL_Color){150, 150, 255, 255});
-        SDL_Color s1 = (menu_selection == 0) ? (SDL_Color){255, 255, 100, 255} : main_color;
-        SDL_Color s2 = (menu_selection == 1) ? (SDL_Color){255, 255, 100, 255} : main_color;
-        SDL_Color s3 = (menu_selection == 2) ? (SDL_Color){255, 255, 100, 255} : main_color;
-        SDL_Color s4 = (menu_selection == 3) ? (SDL_Color){255, 255, 100, 255} : main_color;
-        
-        char v_text[64]; sprintf(v_text, "VOLUME: < %d%% >", settings_volume);
-        vf_draw_string_centered(v_text, SCREEN_WIDTH/2.0f, 250, 22, s1);
-        
-        char f_text[64]; sprintf(f_text, "SCREEN: < %s >", settings_fullscreen ? "FULL" : "WINDOW");
-        vf_draw_string_centered(f_text, SCREEN_WIDTH/2.0f, 300, 22, s2);
-        
-        char d_text[64]; sprintf(d_text, "DIFFICULTY: < %s >", difficulty_names[difficulty]); 
-        vf_draw_string_centered(d_text, SCREEN_WIDTH/2.0f, 350, 22, s3);
+        const char* tab_names[] = {"VIDEO", "AUDIO", "GAMEPLAY", "CONTROLS"};
+        // Draw tab headers
+        float tx = SCREEN_WIDTH/2.0f - 280.0f;
+        for (int t = 0; t < 4; t++) {
+            SDL_Color tc = (t == settings_tab) ? (SDL_Color){255,255,80,255} : (SDL_Color){100,100,160,255};
+            vf_draw_string(tab_names[t], tx + t * 140.0f, 70, 16, tc);
+        }
+        // Underline active tab
+        vf_draw_string_centered("SETTINGS", SCREEN_WIDTH/2.0f, 35, 22, (SDL_Color){150,150,255,255});
+        vf_draw_string_centered("Q / E   OR   LB / RB   TO   SWITCH   TABS", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 70, 11, (SDL_Color){100,100,120,255});
+        vf_draw_string_centered("ESC TO RETURN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 48, 11, (SDL_Color){100,100,120,255});
 
-        const char *glow_names[] = {"OFF", "LOW", "MED", "HIGH", "MAX"};
-        char g_text[64]; sprintf(g_text, "PHOSPHOR GLOW: < %s >", glow_names[settings_glow]);
-        vf_draw_string_centered(g_text, SCREEN_WIDTH/2.0f, 400, 22, s4);
-        
-        vf_draw_string_centered("PRESS SPACE OR ESC TO RETURN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 250, 16, (SDL_Color){180, 180, 180, 255});
-        
-        if (menu_selection == 0) {
-            float tw = (strlen(v_text) * 22 * 1.2f) - (22 * 0.2f);
-            vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, 250, 22, s1);
+        const char* on_off[] = {"OFF", "ON"};
+        const char* dz_names[] = {"LOW", "MED", "HIGH"};
+        const char* ch_names[] = {"OFF", "CROSS", "DOT"};
+        const char* glow_names[] = {"OFF", "LOW", "MED", "HIGH", "MAX"};
+
+        float base_y = 130.0f;
+        float step = 55.0f;
+
+        if (settings_tab == 0) { // VIDEO
+            const char* items[4]; char bufs[4][64];
+            sprintf(bufs[0], "DISPLAY:  < %s >", settings_fullscreen ? "FULLSCREEN" : "WINDOWED");
+            sprintf(bufs[1], "PHOSPHOR GLOW:  < %s >", glow_names[settings_glow]);
+            sprintf(bufs[2], "SHOW FPS:  < %s >", on_off[settings_show_fps]);
+            sprintf(bufs[3], "SCREEN SHAKE:  < %s >", on_off[settings_screen_shake]);
+            for (int i = 0; i < 4; i++) items[i] = bufs[i];
+            for (int i = 0; i < 4; i++) {
+                SDL_Color ic = (menu_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
+                vf_draw_string_centered(items[i], SCREEN_WIDTH/2.0f, base_y + i*step, 18, ic);
+                if (menu_selection == i) {
+                    float tw = (strlen(items[i]) * 18 * 1.2f) - (18 * 0.2f);
+                    vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 35.0f, base_y + i*step, 18, ic);
+                }
+            }
+        } else if (settings_tab == 1) { // AUDIO
+            char b0[64], b1[64], b2[64];
+            sprintf(b0, "MASTER VOLUME:  < %d%% >", settings_volume);
+            sprintf(b1, "SFX VOLUME:  < %d%% >", settings_sfx_vol);
+            sprintf(b2, "MUSIC VOLUME:  < %d%% >", settings_music_vol);
+            const char* items[] = {b0, b1, b2};
+            for (int i = 0; i < 3; i++) {
+                SDL_Color ic = (menu_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
+                vf_draw_string_centered(items[i], SCREEN_WIDTH/2.0f, base_y + i*step, 18, ic);
+                if (menu_selection == i) {
+                    float tw = (strlen(items[i]) * 18 * 1.2f) - (18 * 0.2f);
+                    vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 35.0f, base_y + i*step, 18, ic);
+                }
+            }
+        } else if (settings_tab == 2) { // GAMEPLAY
+            char b0[64], b1[64], b2[64];
+            sprintf(b0, "DIFFICULTY:  < %s >", difficulty_names[difficulty]);
+            sprintf(b1, "AUTOFIRE:  < %s >", on_off[settings_autofire]);
+            sprintf(b2, "INVERT MOUSE Y:  < %s >", on_off[settings_invert_y]);
+            const char* items[] = {b0, b1, b2};
+            for (int i = 0; i < 3; i++) {
+                SDL_Color ic = (menu_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
+                vf_draw_string_centered(items[i], SCREEN_WIDTH/2.0f, base_y + i*step, 18, ic);
+                if (menu_selection == i) {
+                    float tw = (strlen(items[i]) * 18 * 1.2f) - (18 * 0.2f);
+                    vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 35.0f, base_y + i*step, 18, ic);
+                }
+            }
+        } else if (settings_tab == 3) { // CONTROLS
+            char b0[64], b1[64], b2[64], b3[64];
+            sprintf(b0, "MOUSE AIM:  < %s >", on_off[settings_mouse_aim]);
+            sprintf(b1, "CROSSHAIR:  < %s >", ch_names[settings_crosshair_style]);
+            sprintf(b2, "CONTROLLER DEADZONE:  < %s >", dz_names[settings_controller_deadzone]);
+            sprintf(b3, "KEYBINDS  >");
+            const char* items[] = {b0, b1, b2, b3};
+            for (int i = 0; i < 4; i++) {
+                SDL_Color ic = (menu_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
+                vf_draw_string_centered(items[i], SCREEN_WIDTH/2.0f, base_y + i*step, 18, ic);
+                if (menu_selection == i && i < 3) {
+                    float tw = (strlen(items[i]) * 18 * 1.2f) - (18 * 0.2f);
+                    vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 35.0f, base_y + i*step, 18, ic);
+                }
+            }
+            if (g_controller) {
+                vf_draw_string_centered("CONTROLLER CONNECTED", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 100, 12, (SDL_Color){80,200,80,255});
+            }
         }
-        if (menu_selection == 1) {
-            float tw = (strlen(f_text) * 22 * 1.2f) - (22 * 0.2f);
-            vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, 300, 22, s2);
-        }
-        if (menu_selection == 2) {
-            float tw = (strlen(d_text) * 22 * 1.2f) - (22 * 0.2f);
-            vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, 350, 22, s3);
-        }
-        if (menu_selection == 3) {
-            float tw = (strlen(g_text) * 22 * 1.2f) - (22 * 0.2f);
-            vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 40.0f, 400, 22, s4);
+    } else if (game_state == STATE_KEYBINDS) {
+        vf_draw_string_centered("KEYBINDS", SCREEN_WIDTH/2.0f, 60, 28, (SDL_Color){150,150,255,255});
+        if (rebinding_action >= 0) {
+            vf_draw_string_centered("PRESS ANY KEY", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 20, 28, (SDL_Color){255,200,80,255});
+            vf_draw_string_centered("ESC TO CANCEL", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 30, 16, (SDL_Color){150,150,150,255});
+        } else {
+            vf_draw_string_centered("ENTER TO REBIND    ESC TO RETURN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 60, 12, (SDL_Color){100,100,120,255});
+            for (int i = 0; i < KB_COUNT; i++) {
+                SDL_Color ic = (keybind_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
+                const char* kname = SDL_GetScancodeName(keybinds[i]);
+                char row[64]; sprintf(row, "%-14s   %s", kb_action_names[i], kname);
+                float y = 130.0f + i * 50.0f;
+                vf_draw_string_centered(row, SCREEN_WIDTH/2.0f, y, 16, ic);
+                if (keybind_selection == i) {
+                    float tw = (strlen(row) * 16 * 1.2f) - (16*0.2f);
+                    vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 30.0f, y, 16, ic);
+                }
+            }
         }
     } else if (game_state == STATE_HIGHSCORES) {
-        vf_draw_string_centered("GALAXY LEGENDS", SCREEN_WIDTH/2.0f, 100, 35, (SDL_Color){255, 255, 150, 255});
+        vf_draw_string_centered("THE FALLEN DRIFTERS", SCREEN_WIDTH/2.0f, 100, 35, (SDL_Color){255, 220, 100, 255});
         for (int i=0; i<5; i++) { char sl[64]; sprintf(sl, "%d.  %s  %05d", i+1, high_scores[i].initials, high_scores[i].score); vf_draw_string_centered(sl, SCREEN_WIDTH/2.0f, 220 + i*50, 24, main_color); }
-        vf_draw_string_centered("PRESS SPACE TO RETURN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 100, 16, (SDL_Color){180, 180, 180, 255});
+        vf_draw_string_centered("PRESS SPACE TO RETURN TO THE DRIFT", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 100, 14, (SDL_Color){180, 180, 180, 255});
     } else if (game_state == STATE_GAMEOVER) {
-        vf_draw_string_centered("GAME OVER", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 50, 35, (SDL_Color){255, 100, 100, 255});
-        vf_draw_string_centered("PRESS ENTER TO CONTINUE", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 20, 18, main_color);
+        vf_draw_string_centered("DRIFT ENDS", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 80, 45, (SDL_Color){255, 80, 80, 255});
+        vf_draw_string_centered("THE AUTODYNE IS LOST TO THE VOID", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f - 10, 14, (SDL_Color){200, 180, 180, 255});
+        vf_draw_string_centered("PRESS ENTER TO DRIFT AGAIN", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f + 40, 18, main_color);
     } else if (game_state == STATE_NEW_HIGHSCORE) {
-        vf_draw_string_centered("NEW HIGH SCORE!", SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f - 100, 30, (SDL_Color){255, 255, 100, 255});
-        vf_draw_string_centered("ENTER INITIALS:", SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f - 30, 20, main_color);
+        vf_draw_string_centered("NEW DRIFTER RECORD!", SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f - 100, 28, (SDL_Color){255, 240, 80, 255});
+        vf_draw_string_centered("INSCRIBE YOUR MARK:", SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f - 30, 20, main_color);
         char di[8]; sprintf(di, "%c %c %c", temp_initials[0], temp_initials[1], temp_initials[2]); 
         vf_draw_string_centered(di, SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f + 30, 30, main_color);
     } else if (game_state == STATE_UPGRADE_SELECT) {
         static float upgrade_pulse = 0.0f; upgrade_pulse += 0.04f;
         float sz = 25.0f + 2.0f * sinf(upgrade_pulse * 3.0f);
-        vf_draw_string_centered("XP OVERLOAD!", SCREEN_WIDTH/2.0f, 95, sz, (SDL_Color){100, 255, 150, 255});
-        vf_draw_string_centered("CHOOSE YOUR UPGRADE", SCREEN_WIDTH/2.0f, 150, 16, (SDL_Color){200, 200, 200, 255});
+        vf_draw_string_centered("CHRONICLE SURGE!", SCREEN_WIDTH/2.0f, 95, sz, (SDL_Color){120, 255, 160, 255});
+        vf_draw_string_centered("CHOOSE YOUR RELIC", SCREEN_WIDTH/2.0f, 150, 16, (SDL_Color){200, 200, 200, 255});
         vf_draw_string_centered("WASD / ARROW KEYS + ENTER", SCREEN_WIDTH/2.0f, 175, 12, (SDL_Color){120, 120, 120, 255});
         for (int i=0; i<3; i++) {
             int is_sel = (i == selected_option);
@@ -2437,5 +2764,30 @@ void game_render() {
             }
         }
     }
+
+    // Crosshair (screen-space, drawn last so it's always on top)
+    if (settings_mouse_aim && settings_crosshair_style > 0 &&
+        (game_state == STATE_PLAYING || game_state == STATE_ATTRACT_GAMEPLAY)) {
+        int mx, my; SDL_GetMouseState(&mx, &my);
+        vg_set_camera((Vec2){0,0});
+        SDL_Color xhc = {100, 220, 255, 200};
+        float fx = (float)mx, fy = (float)my;
+        if (settings_crosshair_style == 1) { // Cross with gap
+            Line cl[4] = {{{fx-14,fy},{fx-5,fy}},{{fx+5,fy},{fx+14,fy}},{{fx,fy-14},{fx,fy-5}},{{fx,fy+5},{fx,fy+14}}};
+            for (int ci = 0; ci < 4; ci++) { Shape cs = {&cl[ci],1,xhc}; vg_draw_shape(&cs,(Vec2){0,0},0.0f,1.0f); }
+        } else { // Dot
+            Line cl[2] = {{{fx-4,fy},{fx+4,fy}},{{fx,fy-4},{fx,fy+4}}};
+            for (int ci = 0; ci < 2; ci++) { Shape cs = {&cl[ci],1,xhc}; vg_draw_shape(&cs,(Vec2){0,0},0.0f,1.0f); }
+        }
+        vg_set_camera(camera_pos);
+    }
+    // FPS counter
+    if (settings_show_fps) {
+        char fps_buf[16]; sprintf(fps_buf, "%d FPS", fps_display_val);
+        vg_set_camera((Vec2){0,0});
+        vf_draw_string(fps_buf, 8, 8, 14, (SDL_Color){80,200,80,200});
+        vg_set_camera(camera_pos);
+    }
+
     vg_present();
 }

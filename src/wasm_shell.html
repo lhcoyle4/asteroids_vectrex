@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>PERMADRIFT // DRIFTING AT THE WORLDS END</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #010408;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Courier New', Courier, monospace;
+      color: #70d8ff;
+    }
+
+    /* ─── Loader overlay ─── */
+    #loader {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #010408;
+      z-index: 20;
+      transition: opacity 0.9s ease;
+    }
+
+    #loader.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .pd-title {
+      font-size: clamp(1.6rem, 5vw, 2.8rem);
+      letter-spacing: 0.35em;
+      color: #a0e8ff;
+      text-shadow:
+        0 0 10px rgba(100, 210, 255, 0.9),
+        0 0 30px rgba(100, 210, 255, 0.5),
+        0 0 60px rgba(100, 210, 255, 0.2);
+      margin-bottom: 0.5rem;
+      animation: titlePulse 2.5s ease-in-out infinite;
+    }
+
+    .pd-subtitle {
+      font-size: clamp(0.5rem, 1.5vw, 0.65rem);
+      letter-spacing: 0.22em;
+      color: #3880a0;
+      margin-bottom: 3.5rem;
+    }
+
+    .bar-wrap {
+      width: min(320px, 70vw);
+      height: 2px;
+      background: rgba(100, 200, 255, 0.1);
+      border: 1px solid rgba(100, 200, 255, 0.25);
+      margin-bottom: 1.2rem;
+      position: relative;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      background: #70d8ff;
+      box-shadow: 0 0 10px rgba(100, 200, 255, 0.9);
+      transition: width 0.15s ease;
+    }
+
+    #status-text {
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      color: #2a5060;
+    }
+
+    /* CRT scanline overlay */
+    .scanlines {
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 3px,
+        rgba(0, 0, 0, 0.07) 3px,
+        rgba(0, 0, 0, 0.07) 4px
+      );
+      pointer-events: none;
+      z-index: 15;
+    }
+
+    /* ─── Game canvas ─── */
+    canvas.emscripten {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: optimizeSpeed;
+      image-rendering: -moz-crisp-edges;
+      image-rendering: crisp-edges;
+      image-rendering: pixelated;
+      -ms-interpolation-mode: nearest-neighbor;
+      z-index: 1;
+    }
+
+    canvas.emscripten:focus { outline: none; }
+
+    @keyframes titlePulse {
+      0%, 100% { opacity: 0.85; text-shadow: 0 0 10px rgba(100,210,255,0.9), 0 0 30px rgba(100,210,255,0.4); }
+      50%       { opacity: 1.0;  text-shadow: 0 0 15px rgba(100,210,255,1.0), 0 0 50px rgba(100,210,255,0.6), 0 0 90px rgba(100,210,255,0.2); }
+    }
+  </style>
+</head>
+<body>
+  <div class="scanlines"></div>
+
+  <div id="loader">
+    <div class="pd-title">PERMADRIFT</div>
+    <div class="pd-subtitle">D R I F T I N G &nbsp; A T &nbsp; T H E &nbsp; W O R L D S &nbsp; E N D</div>
+    <div class="bar-wrap"><div class="bar-fill" id="bar"></div></div>
+    <div id="status-text">INITIALIZING AUTODYNE SYSTEMS...</div>
+  </div>
+
+  <canvas class="emscripten" id="canvas"
+    oncontextmenu="event.preventDefault()"
+    tabindex="-1">
+  </canvas>
+
+  <script>
+    var barEl     = document.getElementById('bar');
+    var statusEl  = document.getElementById('status-text');
+    var loaderEl  = document.getElementById('loader');
+    var canvas    = document.getElementById('canvas');
+
+    var Module = {
+      canvas: canvas,
+
+      locateFile: function(path, prefix) {
+        return prefix + path + '?v=' + Date.now();
+      },
+
+      preRun:  [],
+      postRun: [],
+
+      print: function(t) {
+        t = Array.prototype.slice.call(arguments).join(' ');
+        console.log(t);
+      },
+
+      printErr: function(t) {
+        t = Array.prototype.slice.call(arguments).join(' ');
+        console.error(t);
+      },
+
+      setStatus: function(text) {
+        if (!Module.setStatus.last) {
+          Module.setStatus.last = { time: Date.now(), text: '' };
+        }
+        if (text === Module.setStatus.last.text) return;
+        Module.setStatus.last.text = text;
+
+        if (!text) {
+          // Loading complete — hide loader
+          loaderEl.classList.add('hidden');
+          setTimeout(function() {
+            loaderEl.style.display = 'none';
+            canvas.focus();
+          }, 950);
+          return;
+        }
+
+        var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+        if (m) {
+          var pct = Math.round(100 * parseFloat(m[2]) / parseFloat(m[4]));
+          barEl.style.width = pct + '%';
+          statusEl.textContent = 'LOADING PERMASPHERE DATA... ' + pct + '%';
+        } else {
+          statusEl.textContent = text.toUpperCase();
+        }
+      },
+
+      monitorRunDependencies: function(left) {}
+    };
+
+    // Keyboard focus — keep canvas focused when the game is running
+    window.addEventListener('click', function() { canvas.focus(); });
+  </script>
+
+  {{{ SCRIPT }}}
+</body>
+</html>

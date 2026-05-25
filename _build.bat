@@ -1,0 +1,70 @@
+@echo off
+cd /d "%~dp0"
+echo.
+echo ============================================================
+echo  PERMADRIFT BUILD PIPELINE
+echo ============================================================
+echo  Working directory: %CD%
+echo.
+
+:: ── 1. Clean ──────────────────────────────────────────────
+if exist permadrift.exe ( del permadrift.exe )
+del /q /f src\*.o src\*.wasm.o 2>nul
+
+:: ── 2. Build Windows exe ──────────────────────────────────
+echo [1/2] Building Windows executable...
+make 2>&1
+echo.
+
+if not exist permadrift.exe (
+    echo BUILD FAILED - exe not produced. Aborting.
+    exit /b 1
+)
+echo BUILD SUCCESS - permadrift.exe ready
+echo.
+
+:: ── 3. Git commit + push (triggers WASM CI on GitHub) ─────
+echo [2/2] Staging source changes for GitHub...
+echo       ^(GitHub Actions will build WASM automatically^)
+
+:: Stage only source and config — never binaries or thirdparty
+git add src\            2>nul
+git add include\        2>nul
+git add Makefile        2>nul
+git add _build.bat      2>nul
+git add .gitignore      2>nul
+git add .gitattributes  2>nul
+git add .github\        2>nul
+
+:: Check if anything is actually staged
+git diff --cached --quiet
+if %errorlevel% == 0 (
+    echo No source changes staged - skipping commit.
+    echo Run the game: permadrift.exe
+    goto :done
+)
+
+:: Commit with a short timestamp
+for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /format:list') do set DT=%%I
+set STAMP=%DT:~0,4%-%DT:~4,2%-%DT:~6,2% %DT:~8,2%:%DT:~10,2%
+
+git commit -m "PERMADRIFT update %STAMP%"
+
+git push origin master
+if %errorlevel% == 0 (
+    echo.
+    echo Pushed to GitHub. CI will:
+    echo   1. Build WASM with Emscripten
+    echo   2. Deploy to gh-pages branch
+    echo   3. Serve at: https://lhcoyle4.github.io/asteroids_vectrex/
+) else (
+    echo.
+    echo Push failed - check git credentials or network.
+    echo Local build still succeeded: permadrift.exe
+)
+
+:done
+echo.
+echo ============================================================
+echo  Done.
+echo ============================================================

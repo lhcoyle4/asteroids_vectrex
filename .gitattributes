@@ -1,0 +1,27 @@
+# Normalize all text files to LF in the repo; checkout as-is on each platform
+* text=auto eol=lf
+
+# Windows-specific scripts always get CRLF on checkout
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+
+# Source / config — always LF
+*.c    text eol=lf
+*.h    text eol=lf
+*.cpp  text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+
+# True binary files — no newline conversion ever
+*.exe    binary
+*.dll    binary
+*.lib    binary
+*.a      binary
+*.wasm   binary
+*.png    binary
+*.wav    binary
+*.ogg    binary
+*.mp3    binary

@@ -47,13 +47,13 @@ int main(int argc, char *argv[]) {
 
     srand((unsigned int)time(NULL));
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
         SDL_Log("SDL could not initialize! SDL_Error: %s", SDL_GetError());
         return 1;
     }
 
     g_window = SDL_CreateWindow(
-        "Asteroids - Vectrex Edition",
+        "PERMADRIFT",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         SCREEN_WIDTH,

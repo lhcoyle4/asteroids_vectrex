@@ -12,7 +12,7 @@ LDFLAGS = -L"$(PROJ_DIR)/thirdparty/SDL2-2.30.3/x86_64-w64-mingw32/lib" \
 
 SRC = src/main.c src/vector_graphics.c src/game.c src/vector_font.c src/audio.c
 OBJ = $(SRC:.c=.o)
-TARGET = asteroids_vectrex.exe
+TARGET = permadrift.exe
 
 all: $(TARGET)
 
@@ -27,7 +27,8 @@ clean:
 
 WASM_CC = emcc
 WASM_CFLAGS = -Wall -Wextra -std=c99 -O2 -I"$(PROJ_DIR)/include" -s USE_SDL=2 -s USE_SDL_MIXER=2
-WASM_LDFLAGS = -s USE_SDL=2 -s USE_SDL_MIXER=2 -s ALLOW_MEMORY_GROWTH=1
+WASM_LDFLAGS = -s USE_SDL=2 -s USE_SDL_MIXER=2 -s ALLOW_MEMORY_GROWTH=1 \
+               --shell-file "$(PROJ_DIR)/src/wasm_shell.html"
 WASM_TARGET = index.html
 WASM_OBJ = $(SRC:.c=.wasm.o)
 

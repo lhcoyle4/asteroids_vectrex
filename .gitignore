@@ -1,17 +1,16 @@
 # Build artifacts
-*.exe
-*.dll
-*.o
-*.a
-*.so
-build/
-dist/
-*.wasm
+permadrift.exe
+src/*.o
+src/*.wasm.o
 
-# Dependencies
-SDL2.dll
-SDL2_mixer.dll
-node_modules/
+# WASM outputs — built by GitHub Actions CI, deployed to gh-pages
+# Do not commit index.js / index.wasm to master; CI manages them
+index.js
+index.wasm
+
+# Emscripten / make cruft
+*.map
+nul
 
 # IDE
 .vscode/
@@ -23,5 +22,5 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Game data
+# Game data (per-machine, not repo state)
 highscores.dat

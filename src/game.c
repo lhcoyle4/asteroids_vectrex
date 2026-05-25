@@ -580,6 +580,7 @@ static const char *difficulty_names[] = {
 static GameState  game_state  = STATE_TITLE;
 static Difficulty difficulty  = DIFFICULTY_NORMAL;
 static float      game_time   = 0.0f;  /* accumulated game time (seconds), for physics */
+static float      hyperjump_flash_timer = 0.0f;
 
 /* --- High scores & initials entry --- */
 static HighScore high_scores[5];
@@ -1512,6 +1513,9 @@ static void trigger_hyperspace(void)
                     + ((float)rand() / RAND_MAX) * (SCREEN_HEIGHT - margin * 2.0f);
     player.vel          = (Vec2){0.0f, 0.0f};
     player.invuln_timer = 0.5f;
+
+    /* Hook massive white rectangle flash into hyperspace logic */
+    hyperjump_flash_timer = 1.0f;
 }
 
 /* ----------- Chronicle Orbs ----------- */
@@ -4335,6 +4339,10 @@ void game_update(float dt)
      * deterministic and frame-rate independent (no fixed 60-fps assumption). */
     game_time += dt;
 
+    if (hyperjump_flash_timer > 0.0f) {
+        hyperjump_flash_timer -= dt;
+    }
+
     /* ── Attract-mode idle sequencer ─────────────────────────────── */
     {
         int is_gameplay = (game_state == STATE_PLAYING
@@ -6274,5 +6282,6 @@ void game_render(void)
     /* Menus and full-screen states — always screen space */
     vg_set_camera((Vec2){0.0f, 0.0f});
     render_menus();
+    vg_draw_hyperjump_flash(hyperjump_flash_timer);
     vg_present();
 }

@@ -2,27 +2,26 @@
 
 ## Antigravity (Gemini)
 *   **Current Branch:** `agent/gemini`
-*   **Active Task:** Idle (Waiting for Claude's UI locks to release)
-*   **Locked Files/Paths:**
-    *   None
+*   **Active Task:** Idle (Waiting for Claude's locks to release)
+*   **Locked Files/Paths:** None
 
 ## Claude
 *   **Current Branch:** `agent/claude`
-*   **Active Task:** FF7R/CoQ HUD UI Overhaul — Phase 2 (render functions + style guide)
+*   **Active Task:** Phase 2 — Noctis HUD overhaul + comprehensive settings system + procedural world gen
 *   **Locked Files/Paths:**
-    *   `src/game.c` — rewriting render_hud(), render_minimap(), render_overlays(), render_menus() with new HUD_* palette and angled panels
-    *   `STYLE_GUIDE.md` — updating typography, color palette, and UI-direction sections
+    *   `src/game.c` — render_hud/minimap/overlays/menus rewrite; settings menu render; world gen integration
+    *   `include/game.h` — new Settings struct, WorldGenParams struct, expanded enums
+    *   `STYLE_GUIDE.md` — typography/color/layout update + settings UI style rules
+    *   `FULIGIN_HUD_DESIGN_BRIEF.md` — addendum with settings menu spec + world gen spec
 
 ### Claude Lock Detail
 
 Started: 2026-05-25
-Phase 1 COMPLETE: include/ui.h and src/ui.c updated with HUD_* palette + 7 new primitive functions. Clean compile confirmed.
+Phase 1 COMPLETE (pushed to agent/claude): include/ui.h + src/ui.c with HUD_* palette + 7 new primitives.
 
-Phase 2 IN PROGRESS:
-- Rewrite render_hud() in src/game.c using HUD_TL/TR/BL/BR constants, ui_panel_angled(), ui_bar_segmented(), ui_cursor_chevron(), ui_section_divider()
-- Rewrite render_minimap() using HUD_ZONE_ACCENT grid cells
-- Rewrite render_overlays() with HUD_CINNABAR warning chevrons, HUD_AMBER combo pop
-- Rewrite render_menus() with double-border terminal style
-- Update STYLE_GUIDE.md typography/color/layout sections per FULIGIN_HUD_DESIGN_BRIEF.md
+Phase 2 IN PROGRESS — three parallel agents:
+- Agent A: STYLE_GUIDE.md + HUD design brief addendum (settings + world gen)
+- Agent B: include/game.h — Settings struct (video/controls/graphics/audio/accessibility/HUD/system/game-specific/world-gen), expanded save/load
+- Agent C: src/game.c — render_hud (angled panels, segmented bars), render_minimap, render_overlays, render_menus (full settings menu tree with all categories), procedural world gen seeding
 
-Do NOT edit src/game.c or STYLE_GUIDE.md until Claude pushes the completion commit and updates this file.
+Do NOT edit the above files until Claude pushes the Phase 2 completion commit.

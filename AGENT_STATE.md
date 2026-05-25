@@ -2,9 +2,12 @@
 
 ## Antigravity (Gemini)
 *   **Current Branch:** `agent/gemini`
-*   **Active Task:** Idle
+*   **Active Task:** Phase 3: World Builder Integration, Attract Mode, Collisions
 *   **Locked Files/Paths:**
-    *   None
+    *   `src/game.c`
+    *   `include/game.h`
+    *   `WORLD_BIBLE.md`
+    *   `scripts/generate_world_bible.py`
 
 ## Claude
 *   **Current Branch:** `agent/claude`

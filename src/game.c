@@ -18,7 +18,7 @@ extern SDL_Renderer *g_renderer; /* defined in main.c */
 extern SDL_Window *g_window;
 
 // Constants
-#define MAX_ASTEROIDS 32
+#define MAX_ASTEROIDS 128
 #define MAX_BULLETS 48
 #define MAX_UFO_BULLETS 32
 #define MAX_PARTICLES 128
@@ -317,14 +317,16 @@ static float screen_shake_timer = 0.0f;
 static float screen_shake_intensity = 0.0f;
 
 static int menu_selection = 0; // 0: Start, 1: High Scores, 2: Settings
-static int settings_volume = 100;
+int settings_volume = 100;
 static int settings_fullscreen = 0;
 static int settings_glow = 3; // 0=OFF, 1=LOW, 2=MED, 3=HIGH, 4=MAX
 
 // Extended settings
 static int settings_tab = 0;       // 0=VIDEO 1=AUDIO 2=GAMEPLAY 3=CONTROLS
-static int settings_sfx_vol = 100;
-static int settings_music_vol = 100;
+int settings_sfx_vol = 100;
+int settings_music_vol = 400;
+int settings_dynamic_range = 1;
+int settings_mute_unfocused = 1;
 static int settings_screen_shake = 1;
 static int settings_show_fps = 0;
 static int settings_mouse_aim = 1;
@@ -332,7 +334,8 @@ static int settings_crosshair_style = 1; // 0=OFF 1=CROSS 2=DOT
 static int settings_autofire = 0;
 static int settings_controller_deadzone = 1; // 0=LOW 1=MED 2=HIGH
 static int settings_invert_y = 0;
-static int settings_control_scheme = 0; // 0=ARCADE  1=TWIN_STICK
+static int settings_control_scheme = 1; // 0=ARCADE  1=TWIN_STICK
+static GameState settings_back_state = STATE_TITLE;
 
 // FPS counter
 static float fps_accum = 0.0f;
@@ -380,10 +383,12 @@ static SDL_GameControllerButton ctrl_binds[CT_COUNT] = {
     SDL_CONTROLLER_BUTTON_B,            // ABILITY 1
     SDL_CONTROLLER_BUTTON_LEFTSHOULDER, // ABILITY 2
     SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,// ABILITY 3
-    SDL_CONTROLLER_BUTTON_MAX           // ABILITY 4 (unbound)
+    SDL_CONTROLLER_BUTTON_MAX,          // ABILITY 4 (unbound)
+    SDL_CONTROLLER_BUTTON_BACK          // MINIMAP
 };
+
 static const char* ct_action_names[CT_COUNT] = {
-    "THRUST", "FIRE", "HYPERSPACE", "ABILITY 1", "ABILITY 2", "ABILITY 3", "ABILITY 4"
+    "THRUST", "FIRE", "HYPERSPACE", "ABILITY 1", "ABILITY 2", "ABILITY 3", "ABILITY 4", "MINIMAP"
 };
 static int ctrl_rebinding_action = -1;
 
@@ -986,33 +991,19 @@ static void spawn_ufo() {
         ufo.radius = (ufo.size == 2) ? 16.0f : 8.0f;
     }
     
-    // Choose side to spawn
-    if (rand() % 2 == 0) {
-        ufo.pos.x = -ufo.radius;
-        ufo.vel.x = 100.0f + 25.0f * level;
+    // Spawn in a circle 1600-2400 units away from player
+    float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+    float dist = 1600.0f + ((float)rand() / RAND_MAX) * 800.0f;
+    ufo.pos.x = player.pos.x + cosf(angle) * dist;
+    ufo.pos.y = player.pos.y + sinf(angle) * dist;
+    // Set initial velocity generally towards player
+    float base_speed = 100.0f + 25.0f * level;
+    if (ufo.pos.x < player.pos.x) {
+        ufo.vel.x = base_speed;
     } else {
-        ufo.pos.x = SCREEN_WIDTH + ufo.radius;
-        ufo.vel.x = -(100.0f + 25.0f * level);
+        ufo.vel.x = -base_speed;
     }
-    
-    /* Speed adjustments per type */
-    if (ufo.size == 3) {
-        ufo.vel.x *= 1.4f;
-    } else if (ufo.size == 4) {
-        ufo.vel.x *= 0.6f;
-    } else if (ufo.size == 6) {
-        ufo.vel.x *= 0.5f; /* Tendril drifts slow */
-    } else if (ufo.size == 7) {
-        ufo.vel.x *= 0.7f; /* Daemon moderate speed */
-    }
-    
-    ufo.pos.y = 80.0f + ((float)rand() / RAND_MAX) * (SCREEN_HEIGHT - 160.0f);
-    if (ufo.size == 4) {
-        ufo.pos.y = (rand() % 2 == 0) ? 50.0f : SCREEN_HEIGHT - 50.0f;
-        ufo.target_y = ufo.pos.y;
-    } else {
-        ufo.target_y = ufo.pos.y;
-    }
+    ufo.target_y = ufo.pos.y;
     ufo.vel.y = 0.0f;
     ufo.fire_timer = 1.0f;
     ufo.change_dir_timer = 1.0f;
@@ -1140,7 +1131,7 @@ static void apply_upgrade(UpgradeType type) {
 
 static void start_next_level() {
     level++;
-    int count = 4 + level + (difficulty * 2); 
+    int count = 10 + level * 3 + (difficulty * 3); 
     if (count > MAX_ASTEROIDS - 4) count = MAX_ASTEROIDS - 4;
 
     // Deactivate all bullets & particles
@@ -1158,7 +1149,7 @@ static void start_next_level() {
     // Spawn new asteroids at distance from player
     for (int i = 0; i < count; i++) {
         float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
-        float dist = 450.0f + ((float)rand() / RAND_MAX) * 300.0f;
+        float dist = 450.0f + ((float)rand() / RAND_MAX) * (2500.0f - 450.0f);
         Vec2 pos = {
             player.pos.x + cosf(angle) * dist,
             player.pos.y + sinf(angle) * dist
@@ -1278,6 +1269,112 @@ void game_init() {
         player.trail_pos[i] = (Vec2){0.0f, 0.0f};
         player.trail_ang[i] = 0.0f;
     }
+
+    // Detect controller at startup
+    int has_controller = 0;
+    int num_joysticks = SDL_NumJoysticks();
+    for (int i = 0; i < num_joysticks; i++) {
+        if (SDL_IsGameController(i)) {
+            if (!g_controller) {
+                g_controller = SDL_GameControllerOpen(i);
+            }
+            if (g_controller) {
+                has_controller = 1;
+                break;
+            }
+        }
+    }
+    settings_mouse_aim = has_controller ? 0 : 1;
+}
+
+static void settings_adjust(int dir) {
+    // dir can be -1 (left/decrease) or +1 (right/increase)
+    if (settings_tab == 0) { // VIDEO
+        if (menu_selection == 0) {
+            settings_fullscreen = !settings_fullscreen;
+            SDL_SetWindowFullscreen(g_window, settings_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+        }
+        else if (menu_selection == 1) {
+            if (dir < 0) {
+                if (settings_glow > 0) settings_glow--;
+            } else {
+                if (settings_glow < 4) settings_glow++;
+            }
+        }
+        else if (menu_selection == 2) {
+            settings_show_fps = !settings_show_fps;
+        }
+        else if (menu_selection == 3) {
+            settings_screen_shake = !settings_screen_shake;
+        }
+    } else if (settings_tab == 1) { // AUDIO
+        if (menu_selection == 0) {
+            if (dir < 0) {
+                if (settings_volume > 0) audio_set_volume(settings_volume - 5);
+            } else {
+                if (settings_volume < 100) audio_set_volume(settings_volume + 5);
+            }
+        }
+        else if (menu_selection == 1) {
+            if (dir < 0) {
+                settings_sfx_vol = (settings_sfx_vol <= 5) ? 0 : settings_sfx_vol - 5;
+            } else {
+                if (settings_sfx_vol < 100) settings_sfx_vol += 5;
+            }
+        }
+        else if (menu_selection == 2) {
+            if (dir < 0) {
+                settings_music_vol = (settings_music_vol <= 5) ? 0 : settings_music_vol - 5;
+            } else {
+                if (settings_music_vol < 400) settings_music_vol += 5;
+            }
+        }
+        else if (menu_selection == 3) {
+            settings_dynamic_range = !settings_dynamic_range;
+        }
+        else if (menu_selection == 4) {
+            settings_mute_unfocused = !settings_mute_unfocused;
+        }
+    } else if (settings_tab == 2) { // GAMEPLAY
+        if (menu_selection == 0) {
+            if (dir < 0) {
+                if (difficulty > 0) difficulty--;
+            } else {
+                if (difficulty < 3) difficulty++;
+            }
+        }
+        else if (menu_selection == 1) {
+            settings_autofire = !settings_autofire;
+        }
+        else if (menu_selection == 2) {
+            settings_invert_y = !settings_invert_y;
+        }
+    } else if (settings_tab == 3) { // CONTROLS
+        if (menu_selection == 0) {
+            settings_mouse_aim = !settings_mouse_aim;
+        }
+        else if (menu_selection == 1) {
+            if (dir < 0) {
+                if (settings_crosshair_style > 0) settings_crosshair_style--;
+            } else {
+                if (settings_crosshair_style < 2) settings_crosshair_style++;
+            }
+        }
+        else if (menu_selection == 2) {
+            if (dir < 0) {
+                if (settings_controller_deadzone > 0) settings_controller_deadzone--;
+            } else {
+                if (settings_controller_deadzone < 2) settings_controller_deadzone++;
+            }
+        }
+        else if (menu_selection == 3) {
+            if (dir < 0) {
+                if (settings_control_scheme > 0) settings_control_scheme--;
+            } else {
+                if (settings_control_scheme < 1) settings_control_scheme++;
+            }
+        }
+    }
 }
 
 void game_set_paused(int paused) {
@@ -1296,16 +1393,72 @@ void game_set_paused(int paused) {
 void game_handle_input(SDL_Event *event) {
     idle_timer = 0.0f; // Reset idle timer on any input
     if (game_state == STATE_ATTRACT_INSTRUCTIONS || game_state == STATE_ATTRACT_GAMEPLAY) {
+        if (event->type == SDL_KEYDOWN) {
+            SDL_Keycode _asym = event->key.keysym.sym;
+            if (_asym == SDLK_LCTRL || _asym == SDLK_RCTRL || 
+                _asym == SDLK_LSHIFT || _asym == SDLK_RSHIFT || 
+                _asym == SDLK_LALT || _asym == SDLK_RALT || 
+                _asym == SDLK_LGUI || _asym == SDLK_RGUI) {
+                return;
+            }
+            if ((SDL_GetModState() & KMOD_CTRL) && (_asym >= SDLK_1 && _asym <= SDLK_9)) {
+                switch ((int)(_asym - SDLK_1)) {
+                    case 0: player_upgrades.triple_shot = 1; break;
+                    case 1: player_upgrades.homing = 1; break;
+                    case 2: player_upgrades.shield_active = 1; break;
+                    case 3: player_upgrades.speed_mult *= 1.25f; break;
+                    case 4: player_upgrades.fire_cooldown_mult *= 0.75f; break;
+                    case 5: player_upgrades.piercing = 1; break;
+                    case 6: player_upgrades.mirror_image = 1; break;
+                    case 7: player_upgrades.resonance_cascade = 1; break;
+                    case 8: player_upgrades.thermal_hull = 1; break;
+                }
+                return;
+            }
+        } else if (event->type == SDL_MOUSEBUTTONDOWN || event->type == SDL_CONTROLLERBUTTONDOWN) {
+            // Mouse click or controller button press exits attract mode
+        } else {
+            // Ignore mouse motion, key releases, controller axis motion, etc.
+            return;
+        }
         game_state = STATE_TITLE;
+        is_attract_ai = 0;
+        audio_stop(SFX_THRUST);
+        audio_stop(SFX_UFO_LOOP);
         return;
     }
 
     if (event->type == SDL_CONTROLLERDEVICEADDED) {
-        if (!g_controller) g_controller = SDL_GameControllerOpen(event->cdevice.which);
+        if (!g_controller) {
+            if (SDL_IsGameController(event->cdevice.which)) {
+                g_controller = SDL_GameControllerOpen(event->cdevice.which);
+                if (g_controller) {
+                    settings_mouse_aim = 0;
+                }
+            }
+        }
         return;
     }
     if (event->type == SDL_CONTROLLERDEVICEREMOVED) {
-        if (g_controller) { SDL_GameControllerClose(g_controller); g_controller = NULL; }
+        if (g_controller) {
+            SDL_Joystick *joy = SDL_GameControllerGetJoystick(g_controller);
+            if (joy && SDL_JoystickInstanceID(joy) == event->cdevice.which) {
+                SDL_GameControllerClose(g_controller);
+                g_controller = NULL;
+                settings_mouse_aim = 1;
+                
+                int num_joysticks = SDL_NumJoysticks();
+                for (int i = 0; i < num_joysticks; i++) {
+                    if (SDL_IsGameController(i)) {
+                        g_controller = SDL_GameControllerOpen(i);
+                        if (g_controller) {
+                            settings_mouse_aim = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         return;
     }
 
@@ -1317,29 +1470,82 @@ void game_handle_input(SDL_Event *event) {
             if (btn == SDL_CONTROLLER_BUTTON_A || btn == SDL_CONTROLLER_BUTTON_START) {
                 if (menu_selection == 0) start_new_game();
                 else if (menu_selection == 1) game_state = STATE_HIGHSCORES;
-                else if (menu_selection == 2) { game_state = STATE_SETTINGS; menu_selection = 0; settings_tab = 0; }
+                else if (menu_selection == 2) { 
+                    settings_back_state = STATE_TITLE;
+                    game_state = STATE_SETTINGS; 
+                    menu_selection = 0; 
+                    settings_tab = 0; 
+                }
             }
             if (btn == SDL_CONTROLLER_BUTTON_B) { SDL_Event qe; qe.type = SDL_QUIT; SDL_PushEvent(&qe); }
         } else if (game_state == STATE_PLAYING) {
             if (btn == SDL_CONTROLLER_BUTTON_START) game_set_paused(1);
             if (btn == ctrl_binds[CT_HYPERSPACE]) trigger_hyperspace();
+            if (btn == ctrl_binds[CT_MINIMAP]) minimap_visible = !minimap_visible;
         } else if (game_state == STATE_PAUSED) {
             if (btn == SDL_CONTROLLER_BUTTON_START || btn == SDL_CONTROLLER_BUTTON_B) game_set_paused(0);
+            else if (btn == SDL_CONTROLLER_BUTTON_Y || btn == SDL_CONTROLLER_BUTTON_BACK) {
+                settings_back_state = STATE_PAUSED;
+                game_state = STATE_SETTINGS;
+                menu_selection = 0;
+                settings_tab = 0;
+            }
         } else if (game_state == STATE_SETTINGS) {
+            int max_sel = 0;
+            if (settings_tab == 0) max_sel = 3;
+            else if (settings_tab == 1) max_sel = 4;
+            else if (settings_tab == 2) max_sel = 2;
+            else if (settings_tab == 3) max_sel = 4;
+
             if (btn == SDL_CONTROLLER_BUTTON_DPAD_UP)    menu_selection = (menu_selection == 0) ? 0 : menu_selection - 1;
-            if (btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN)  menu_selection++;
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN)  { if (menu_selection < max_sel) menu_selection++; }
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_LEFT)  settings_adjust(-1);
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) settings_adjust(1);
+            if (btn == SDL_CONTROLLER_BUTTON_A) {
+                if (settings_tab == 3 && menu_selection == 4) {
+                    game_state = STATE_KEYBINDS;
+                    keybind_selection = 0;
+                    keybind_page = 0;
+                    rebinding_action = -1;
+                    ctrl_rebinding_action = -1;
+                } else {
+                    settings_adjust(1);
+                }
+            }
             if (btn == SDL_CONTROLLER_BUTTON_LEFTSHOULDER)  settings_tab = (settings_tab + 3) % 4;
             if (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) settings_tab = (settings_tab + 1) % 4;
-            if (btn == SDL_CONTROLLER_BUTTON_B || btn == SDL_CONTROLLER_BUTTON_START) { game_state = STATE_TITLE; menu_selection = 0; }
+            if (btn == SDL_CONTROLLER_BUTTON_B || btn == SDL_CONTROLLER_BUTTON_START) { 
+                game_state = settings_back_state; 
+                menu_selection = 0; 
+            }
         } else if (game_state == STATE_KEYBINDS) {
             if (ctrl_rebinding_action >= 0) {
-                // Assign this button to the action (don't allow START/BACK to avoid trapping)
                 if (btn != SDL_CONTROLLER_BUTTON_START && btn != SDL_CONTROLLER_BUTTON_BACK) {
                     ctrl_binds[ctrl_rebinding_action] = btn;
                 }
                 ctrl_rebinding_action = -1;
             } else {
-                if (btn == SDL_CONTROLLER_BUTTON_B) { game_state = STATE_SETTINGS; menu_selection = 0; }
+                if (btn == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+                    int page_count = (keybind_page == 0) ? KB_COUNT : CT_COUNT;
+                    keybind_selection = (keybind_selection + page_count - 1) % page_count;
+                } else if (btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+                    int page_count = (keybind_page == 0) ? KB_COUNT : CT_COUNT;
+                    keybind_selection = (keybind_selection + 1) % page_count;
+                } else if (btn == SDL_CONTROLLER_BUTTON_A) {
+                    if (keybind_page == 0) {
+                        rebinding_action = keybind_selection;
+                    } else {
+                        ctrl_rebinding_action = keybind_selection;
+                    }
+                } else if (btn == SDL_CONTROLLER_BUTTON_LEFTSHOULDER || btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                    keybind_page = 1 - keybind_page;
+                    keybind_selection = 0;
+                    rebinding_action = -1;
+                    ctrl_rebinding_action = -1;
+                } else if (btn == SDL_CONTROLLER_BUTTON_B) {
+                    game_state = STATE_SETTINGS;
+                    menu_selection = 0;
+                }
             }
         } else if (game_state == STATE_GAMEOVER) {
             if (btn == SDL_CONTROLLER_BUTTON_A || btn == SDL_CONTROLLER_BUTTON_START) {
@@ -1364,40 +1570,13 @@ void game_handle_input(SDL_Event *event) {
     }
 
     if (event->type == SDL_KEYDOWN) {
-        if (game_state == STATE_ATTRACT_GAMEPLAY) {
-            SDL_Keycode _asym = event->key.keysym.sym;
-            if (_asym >= SDLK_1 && _asym <= SDLK_9) {
-                // Number keys 1-9: gift a powerup to the attract-mode AI
-                switch ((int)(_asym - SDLK_1)) {
-                    case 0: player_upgrades.triple_shot = 1; break;
-                    case 1: player_upgrades.homing = 1; break;
-                    case 2: player_upgrades.shield_active = 1; break;
-                    case 3: player_upgrades.speed_mult *= 1.25f; break;
-                    case 4: player_upgrades.fire_cooldown_mult *= 0.75f; break;
-                    case 5: player_upgrades.piercing = 1; break;
-                    case 6: player_upgrades.mirror_image = 1; break;
-                    case 7: player_upgrades.resonance_cascade = 1; break;
-                    case 8: player_upgrades.thermal_hull = 1; break;
-                }
-                return; // don't exit attract mode
-            }
-            // Any other key: exit attract mode back to title
-            game_state = STATE_TITLE;
-            is_attract_ai = 0;
-            audio_stop(SFX_THRUST);
-            audio_stop(SFX_UFO_LOOP);
-            return;
-        }
-
-        // Handle Cheat Code (Ctrl+F8)
         if (event->key.keysym.sym == SDLK_F8 && (SDL_GetModState() & KMOD_CTRL)) {
             god_mode = !god_mode;
             god_mode_msg_timer = 2.0f;
-            audio_play(SFX_EXPLOSION_LG); // feedback
+            audio_play(SFX_EXPLOSION_LG);
         }
 
         if (game_state == STATE_TITLE) {
-            // Ctrl+F5: manually trigger attract mode immediately
             if (event->key.keysym.sym == SDLK_F5 && (SDL_GetModState() & KMOD_CTRL)) {
                 is_attract_ai = 1;
                 start_new_game();
@@ -1410,7 +1589,12 @@ void game_handle_input(SDL_Event *event) {
             if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
                 if (menu_selection == 0) start_new_game();
                 else if (menu_selection == 1) game_state = STATE_HIGHSCORES;
-                else if (menu_selection == 2) { game_state = STATE_SETTINGS; menu_selection = 0; settings_tab = 0; }
+                else if (menu_selection == 2) { 
+                    settings_back_state = STATE_TITLE;
+                    game_state = STATE_SETTINGS; 
+                    menu_selection = 0; 
+                    settings_tab = 0; 
+                }
             }
             if (event->key.keysym.sym == SDLK_ESCAPE) {
                 SDL_Event qe; qe.type = SDL_QUIT; SDL_PushEvent(&qe);
@@ -1423,32 +1607,10 @@ void game_handle_input(SDL_Event *event) {
             } else if ((event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_DOWN) && player.active) {
                 trigger_hyperspace();
             } else if (event->key.keysym.sym == SDLK_b && player.active) {
-                /* B = open shop when docked at home station */
                 float _dx = player.pos.x, _dy = player.pos.y;
                 if (sqrtf(_dx*_dx + _dy*_dy) < 600.0f) {
                     game_state = STATE_SHOP;
                     shop_sel = 0;
-                    audio_stop(SFX_THRUST);
-                }
-            } else if (event->key.keysym.sym == SDLK_m && player.active) {
-                /* M = open warp menu */
-                game_state = STATE_WARP_MENU;
-                warp_menu_sel = 0;
-                audio_stop(SFX_THRUST);
-            } else if (event->key.keysym.sym == SDLK_g && player.active && player_upgrades.vortex_grenade) {
-                /* G = launch vortex grenade */
-                for (int _bi = 0; _bi < MAX_BULLETS; _bi++) {
-                    if (!bullets[_bi].active) {
-                        bullets[_bi].active = 1;
-                        bullets[_bi].pos = player.pos;
-                        bullets[_bi].vel.x = sinf(player.angle) * 110.0f;
-                        bullets[_bi].vel.y = -cosf(player.angle) * 110.0f;
-                        bullets[_bi].life = 3.2f;
-                        bullets[_bi].bounces = 0;
-                        bullets[_bi].is_homing = 0;
-                        bullets[_bi].pierces = 1;
-                        break;
-                    }
                 }
             }
         } else if (game_state == STATE_SHOP) {
@@ -1460,16 +1622,16 @@ void game_handle_input(SDL_Event *event) {
                 shop_sel = (shop_sel + 1) % 14;
             } else if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) {
                 switch (shop_sel) {
-                    case 0: if (res_ammo >= 2) { res_ammo -= 2; fuel_current += 25.0f; if (fuel_current > fuel_max) fuel_current = fuel_max; } break;
-                    case 1: if (res_autodyne_frags >= 3) { res_autodyne_frags -= 3; fuel_current = fuel_max; } break;
-                    case 2: if (res_void_steel >= 2) { res_void_steel -= 2; player_upgrades.speed_mult *= 1.15f; } break;
-                    case 3: if (res_hex_modules >= 2) { res_hex_modules -= 2; player_upgrades.fire_cooldown_mult *= 0.85f; } break;
-                    case 4: if (res_void_steel >= 3) { res_void_steel -= 3; player_upgrades.shield_active = 1; } break;
-                    case 5: if (res_medicinals >= 4) { res_medicinals -= 4; lives++; } break;
-                    case 6: if (res_isotopes >= 2) { res_isotopes -= 2; res_rockets += 5; } break;
-                    case 7: if (res_void_steel >= 4) { res_void_steel -= 4; player_upgrades.auto_turret = 1; } break;
-                    case 8: if (res_biomatter >= 3) { res_biomatter -= 3; lives++; } break;
-                    case 9: if (res_hex_modules >= 3) { res_hex_modules -= 3; warp_drive_range += 1000.0f; } break;
+                    case 0: if (res_void_steel >= 3) { res_void_steel -= 3; fuel_current = fuel_max; } break;
+                    case 1: if (res_autodyne_frags >= 4) { res_autodyne_frags -= 4; res_ammo += 100; } break;
+                    case 2: if (res_hex_modules >= 2) { res_hex_modules -= 2; res_rockets += 5; } break;
+                    case 3: if (res_void_steel >= 5 && res_hex_modules >= 1) { res_void_steel -= 5; res_hex_modules -= 1; player_upgrades.shield_active = 1; } break;
+                    case 4: if (res_isotopes >= 3) { res_isotopes -= 3; player_upgrades.speed_mult *= 1.1f; } break;
+                    case 5: if (res_coolant >= 3) { res_coolant -= 3; player_upgrades.fire_cooldown_mult *= 0.9f; } break;
+                    case 6: if (res_contraband >= 1) { res_contraband -= 1; score += 5000; } break;
+                    case 7: if (res_void_steel >= 8) { res_void_steel -= 8; player_upgrades.rear_gun = 1; } break;
+                    case 8: if (res_hex_modules >= 4) { res_hex_modules -= 4; player_upgrades.split_shot = 1; } break;
+                    case 9: if (res_isotopes >= 6) { res_isotopes -= 6; player_upgrades.phase_shift = 1; } break;
                     case 10: if (res_coolant >= 2) { res_coolant -= 2; fuel_max += 50.0f; fuel_current += 50.0f; } break;
                     case 11: if (res_contraband >= 2) { res_contraband -= 2; res_ammo += 20; res_rockets += 3; } break;
                     case 12: if (res_biomatter >= 5) { res_biomatter -= 5; res_void_steel += 5; } break;
@@ -1506,6 +1668,11 @@ void game_handle_input(SDL_Event *event) {
                 save_game();
             } else if (event->key.keysym.sym == SDLK_l) {
                 load_game();
+            } else if (event->key.keysym.sym == SDLK_p) {
+                settings_back_state = STATE_PAUSED;
+                game_state = STATE_SETTINGS;
+                menu_selection = 0;
+                settings_tab = 0;
             } else if (event->key.keysym.sym == SDLK_q) {
                 game_state = STATE_TITLE;
                 audio_stop(SFX_THRUST);
@@ -1513,7 +1680,6 @@ void game_handle_input(SDL_Event *event) {
             }
         } else if (game_state == STATE_KEYBINDS) {
             if (rebinding_action >= 0) {
-                // Any key press assigns it (keyboard page)
                 SDL_Scancode sc = event->key.keysym.scancode;
                 if (sc != SDL_SCANCODE_ESCAPE) keybinds[rebinding_action] = sc;
                 rebinding_action = -1;
@@ -1527,144 +1693,75 @@ void game_handle_input(SDL_Event *event) {
                     { keybind_page = 1 - keybind_page; keybind_selection = 0; rebinding_action = -1; ctrl_rebinding_action = -1; }
                 if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) {
                     if (keybind_page == 0) rebinding_action = keybind_selection;
-                    // controller rebinding happens via controller button event
                     else ctrl_rebinding_action = keybind_selection;
                 }
                 if (event->key.keysym.sym == SDLK_ESCAPE)
                     { game_state = STATE_SETTINGS; menu_selection = 0; settings_tab = 3; rebinding_action = -1; ctrl_rebinding_action = -1; }
             }
         } else if (game_state == STATE_SETTINGS) {
-            // Tab switching with Q/E
+            int max_sel = 0;
+            if (settings_tab == 0) max_sel = 3;
+            else if (settings_tab == 1) max_sel = 4;
+            else if (settings_tab == 2) max_sel = 2;
+            else if (settings_tab == 3) max_sel = 4;
+
             if (event->key.keysym.sym == SDLK_q) { settings_tab = (settings_tab + 3) % 4; menu_selection = 0; }
             if (event->key.keysym.sym == SDLK_e) { settings_tab = (settings_tab + 1) % 4; menu_selection = 0; }
-
-            int tab_item_count[] = {4, 3, 3, 5}; // items per tab (CONTROLS tab now has 5)
-            int n = tab_item_count[settings_tab];
-            if (event->key.keysym.sym == SDLK_UP   || event->key.keysym.sym == SDLK_w) menu_selection = (menu_selection + n - 1) % n;
-            if (event->key.keysym.sym == SDLK_DOWN  || event->key.keysym.sym == SDLK_s) menu_selection = (menu_selection + 1) % n;
-
-            if (settings_tab == 0) { // VIDEO
-                if (menu_selection == 0) { // Fullscreen
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
-                        settings_fullscreen = !settings_fullscreen;
-                        SDL_SetWindowFullscreen(g_window, settings_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-                    }
-                } else if (menu_selection == 1) { // Phosphor Glow
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) settings_glow = (settings_glow + 4) % 5;
-                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_glow = (settings_glow + 1) % 5;
-                } else if (menu_selection == 2) { // Show FPS
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_show_fps = !settings_show_fps;
-                } else if (menu_selection == 3) { // Screen Shake
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_screen_shake = !settings_screen_shake;
-                }
-            } else if (settings_tab == 1) { // AUDIO
-                if (menu_selection == 0) { // Master Volume
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) { if (settings_volume > 0) { settings_volume -= 10; audio_set_volume(settings_volume); } }
-                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) { if (settings_volume < 100) { settings_volume += 10; audio_set_volume(settings_volume); } }
-                } else if (menu_selection == 1) { // SFX Volume
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) { if (settings_sfx_vol > 0) settings_sfx_vol -= 10; }
-                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) { if (settings_sfx_vol < 100) settings_sfx_vol += 10; }
-                } else if (menu_selection == 2) { // Music Volume
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) { if (settings_music_vol > 0) settings_music_vol -= 10; }
-                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) { if (settings_music_vol < 100) settings_music_vol += 10; }
-                }
-            } else if (settings_tab == 2) { // GAMEPLAY
-                if (menu_selection == 0) { // Difficulty
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) difficulty = (difficulty + 3) % 4;
-                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) difficulty = (difficulty + 1) % 4;
-                } else if (menu_selection == 1) { // Autofire
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_autofire = !settings_autofire;
-                } else if (menu_selection == 2) { // Invert Y (mouse)
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_invert_y = !settings_invert_y;
-                }
-            } else if (settings_tab == 3) { // CONTROLS
-                if (menu_selection == 0) { // Mouse Aim
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_mouse_aim = !settings_mouse_aim;
-                } else if (menu_selection == 1) { // Crosshair
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) settings_crosshair_style = (settings_crosshair_style + 2) % 3;
-                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_crosshair_style = (settings_crosshair_style + 1) % 3;
-                } else if (menu_selection == 2) { // Controller deadzone
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) settings_controller_deadzone = (settings_controller_deadzone + 2) % 3;
-                    if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_controller_deadzone = (settings_controller_deadzone + 1) % 3;
-                } else if (menu_selection == 3) { // Control scheme
-                    if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) settings_control_scheme = !settings_control_scheme;
-                } else if (menu_selection == 4) { // Keybinds
-                    if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) { game_state = STATE_KEYBINDS; keybind_selection = 0; keybind_page = 0; rebinding_action = -1; ctrl_rebinding_action = -1; }
+            if (event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w) {
+                menu_selection = (menu_selection == 0) ? 0 : menu_selection - 1;
+            }
+            if (event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) {
+                if (menu_selection < max_sel) menu_selection++;
+            }
+            if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a) {
+                settings_adjust(-1);
+            }
+            if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d) {
+                settings_adjust(1);
+            }
+            if (event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_SPACE) {
+                if (settings_tab == 3 && menu_selection == 4) {
+                    game_state = STATE_KEYBINDS;
+                    keybind_selection = 0;
+                    keybind_page = 0;
+                    rebinding_action = -1;
+                    ctrl_rebinding_action = -1;
+                } else {
+                    settings_adjust(1);
                 }
             }
-            if (event->key.keysym.sym == SDLK_ESCAPE) { game_state = STATE_TITLE; menu_selection = 0; }
+            if (event->key.keysym.sym == SDLK_ESCAPE) {
+                game_state = settings_back_state;
+                menu_selection = 0;
+            }
         } else if (game_state == STATE_GAMEOVER) {
-            if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
-                // Check if high score achieved
+            if (event->key.keysym.sym == SDLK_ESCAPE || event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
                 int is_hs = 0;
-                for (int i = 0; i < 5; i++) {
-                    if (score > high_scores[i].score) {
-                        is_hs = 1;
-                        new_high_score_idx = i;
-                        break;
-                    }
+                for (int i = 0; i < 5; i++) if (score > high_scores[i].score) { is_hs = 1; new_high_score_idx = i; break; }
+                if (is_hs) { game_state = STATE_NEW_HIGHSCORE; strcpy(temp_initials, "A  "); cur_initial_char = 0; }
+                else game_state = STATE_HIGHSCORES;
+            }
+        } else if (game_state == STATE_NEW_HIGHSCORE) {
+            SDL_Keycode sym = event->key.keysym.sym;
+            if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
+                high_scores[new_high_score_idx].score = score;
+                strcpy(high_scores[new_high_score_idx].initials, temp_initials);
+                save_high_scores();
+                game_state = STATE_HIGHSCORES;
+            } else if (sym == SDLK_BACKSPACE) {
+                if (cur_initial_char > 0) {
+                    cur_initial_char--;
+                    temp_initials[cur_initial_char] = ' ';
                 }
-                if (is_hs) {
-                    game_state = STATE_NEW_HIGHSCORE;
-                    strcpy(temp_initials, "A  ");
-                    cur_initial_char = 0;
-                } else {
-                    game_state = STATE_HIGHSCORES; // Show scores anyway
+            } else if (sym >= SDLK_a && sym <= SDLK_z) {
+                if (cur_initial_char < 3) {
+                    temp_initials[cur_initial_char] = 'A' + (sym - SDLK_a);
+                    cur_initial_char++;
                 }
             }
         } else if (game_state == STATE_HIGHSCORES) {
-            if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN || event->key.keysym.sym == SDLK_ESCAPE) {
+            if (event->key.keysym.sym == SDLK_ESCAPE || event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
                 game_state = STATE_TITLE;
-            }
-        } else if (game_state == STATE_NEW_HIGHSCORE) {
-            if (event->key.keysym.sym == SDLK_LEFT) {
-                if (temp_initials[cur_initial_char] == ' ') {
-                    temp_initials[cur_initial_char] = 'Z';
-                } else if (temp_initials[cur_initial_char] == 'A') {
-                    temp_initials[cur_initial_char] = ' ';
-                } else {
-                    temp_initials[cur_initial_char]--;
-                }
-            } else if (event->key.keysym.sym == SDLK_RIGHT) {
-                if (temp_initials[cur_initial_char] == ' ') {
-                    temp_initials[cur_initial_char] = 'A';
-                } else if (temp_initials[cur_initial_char] == 'Z') {
-                    temp_initials[cur_initial_char] = ' ';
-                } else {
-                    temp_initials[cur_initial_char]++;
-                }
-            } else if (event->key.keysym.sym == SDLK_SPACE || event->key.keysym.sym == SDLK_RETURN) {
-                if (cur_initial_char < 2) {
-                    cur_initial_char++;
-                    temp_initials[cur_initial_char] = 'A';
-                } else {
-                    // Shift lower scores down
-                    for (int i = 4; i > new_high_score_idx; i--) {
-                        high_scores[i] = high_scores[i - 1];
-                    }
-                    // Insert new high score
-                    strcpy(high_scores[new_high_score_idx].initials, temp_initials);
-                    high_scores[new_high_score_idx].score = score;
-                    save_high_scores();
-
-                    game_state = STATE_HIGHSCORES;
-                }
-            }
-        } else if (game_state == STATE_UPGRADE_SELECT) {
-            if (event->key.keysym.sym == SDLK_LEFT || event->key.keysym.sym == SDLK_a || event->key.keysym.sym == SDLK_UP || event->key.keysym.sym == SDLK_w) {
-                selected_option = (selected_option + 2) % 3;
-            } else if (event->key.keysym.sym == SDLK_RIGHT || event->key.keysym.sym == SDLK_d || event->key.keysym.sym == SDLK_DOWN || event->key.keysym.sym == SDLK_s) {
-                selected_option = (selected_option + 1) % 3;
-            } else if (event->key.keysym.sym == SDLK_RETURN) {
-                apply_upgrade(upgrade_options[selected_option]);
-                if (wave_cleared_pending) {
-                    wave_cleared_pending = 0;
-                    start_next_level();
-                }
-                game_state = is_attract_ai ? STATE_ATTRACT_GAMEPLAY : STATE_PLAYING;
-                if (ufo.active) {
-                    audio_play(SFX_UFO_LOOP);
-                }
             }
         }
     }
@@ -1681,6 +1778,45 @@ static float respawn_blink = 0.0f;
 static int respawn_phase = 0;
 
 void game_update(float delta_time) {
+    int is_gameplay = (game_state == STATE_PLAYING || game_state == STATE_PAUSED || 
+                       game_state == STATE_UPGRADE_SELECT || game_state == STATE_SHOP || 
+                       game_state == STATE_WARP_MENU || game_state == STATE_ATTRACT_GAMEPLAY ||
+                       ((game_state == STATE_SETTINGS || game_state == STATE_KEYBINDS) && settings_back_state == STATE_PAUSED));
+    int is_paused = (game_state == STATE_PAUSED || game_state == STATE_UPGRADE_SELECT || 
+                     game_state == STATE_SHOP || game_state == STATE_WARP_MENU ||
+                     ((game_state == STATE_SETTINGS || game_state == STATE_KEYBINDS) && settings_back_state == STATE_PAUSED));
+
+    // ─── AUDIO MUSIC INTEGRATION ───
+    {
+        float combat_level = 0.0f;
+        if (ufo.active) {
+            combat_level = 1.0f;
+        } else {
+            int near_count = 0;
+            if (player.active) {
+                for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                    if (asteroids[i].active) {
+                        float dx = asteroids[i].pos.x - player.pos.x;
+                        float dy = asteroids[i].pos.y - player.pos.y;
+                        if (dx*dx + dy*dy < 400.0f * 400.0f) {
+                            near_count++;
+                        }
+                    }
+                }
+            }
+            if (near_count > 5) combat_level = 1.0f;
+            else if (near_count > 0) combat_level = (float)near_count / 5.0f;
+        }
+
+        float spookiness = 0.0f;
+        if (player.active) {
+            float dist = sqrtf(player.pos.x * player.pos.x + player.pos.y * player.pos.y);
+            spookiness = dist / 8000.0f;
+            if (spookiness > 1.0f) spookiness = 1.0f;
+        }
+
+        audio_set_music_params(combat_level, spookiness, is_paused, is_gameplay, delta_time);
+    }
     fps_accum += delta_time;
     fps_frame_count++;
     if (fps_accum >= 0.5f) {
@@ -1698,17 +1834,17 @@ void game_update(float delta_time) {
             camera_pos.x += (target_cam_x - camera_pos.x) * 6.0f * delta_time;
             camera_pos.y += (target_cam_y - camera_pos.y) * 6.0f * delta_time;
         }
-    } else if (game_state != STATE_PAUSED && game_state != STATE_UPGRADE_SELECT) {
+    } else if (!is_paused) {
         camera_pos = (Vec2){0.0f, 0.0f};
     }
 
-    if (game_state != STATE_PAUSED && game_state != STATE_UPGRADE_SELECT) {
+    if (!is_paused) {
         if (god_mode_msg_timer > 0.0f) {
             god_mode_msg_timer -= delta_time;
         }
     }
 
-    if (game_state != STATE_PLAYING && game_state != STATE_ATTRACT_GAMEPLAY && game_state != STATE_PAUSED && game_state != STATE_UPGRADE_SELECT) {
+    if (!is_gameplay) {
         idle_timer += delta_time;
         if (idle_timer >= ATTRACT_DELAY) {
             idle_timer = 0.0f;
@@ -1742,7 +1878,7 @@ void game_update(float delta_time) {
     }
 
     int active_asteroids_count = 0;
-    if (game_state != STATE_PAUSED && game_state != STATE_UPGRADE_SELECT) {
+    if (!is_paused) {
         // Update combo timer
         if (combo_timer > 0.0f) {
             combo_timer -= delta_time;
@@ -1821,7 +1957,7 @@ void game_update(float delta_time) {
             }
         }
 
-        // --- Update Asteroids (always update) ---
+// --- Update Asteroids (always update) ---
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             if (asteroids[i].active) {
                 active_asteroids_count++;
@@ -1841,9 +1977,9 @@ void game_update(float delta_time) {
                 // If asteroid is too far from player, reposition it!
                 if (player.active) {
                     float dist_sq = distance_sq(asteroids[i].pos, player.pos);
-                    if (dist_sq > 1200.0f * 1200.0f) {
+                    if (dist_sq > 3500.0f * 3500.0f) {
                         float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
-                        float dist = 850.0f + ((float)rand() / RAND_MAX) * 250.0f;
+                        float dist = 2000.0f + ((float)rand() / RAND_MAX) * 500.0f;
                         asteroids[i].pos.x = player.pos.x + cosf(angle) * dist;
                         asteroids[i].pos.y = player.pos.y + sinf(angle) * dist;
                         // Reset trail to prevent line artifacts stretching across the screen
@@ -1856,14 +1992,14 @@ void game_update(float delta_time) {
         }
 
         // Continual spawning: if active asteroids falls below target count, spawn new ones off-screen
-        int target_asteroids = 6 + player_level + (difficulty * 2);
+        int target_asteroids = 12 + player_level * 3 + (difficulty * 3);
         if (target_asteroids > MAX_ASTEROIDS - 4) {
             target_asteroids = MAX_ASTEROIDS - 4;
         }
         if (player.active && active_asteroids_count < target_asteroids) {
             // Spawn a new large asteroid in an off-screen ring
             float angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
-            float dist = 850.0f + ((float)rand() / RAND_MAX) * 250.0f;
+            float dist = 2000.0f + ((float)rand() / RAND_MAX) * 500.0f;
             Vec2 pos = {
                 player.pos.x + cosf(angle) * dist,
                 player.pos.y + sinf(angle) * dist
@@ -1905,12 +2041,13 @@ void game_update(float delta_time) {
     }
 
     // --- Update Player ---
-    if (player.active) {
+if (player.active) {
         int thrust_key_down = 0;
         int fire_key_down = 0;
+        float move_x = 0.0f;
+        float move_y = 0.0f;
         
         if (game_state == STATE_ATTRACT_GAMEPLAY) {
-            // Very simple AI: find closest asteroid
             float closest_dist = 9999999.0f;
             int closest_idx = -1;
             for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -1928,7 +2065,6 @@ void game_update(float delta_time) {
                 float dx = asteroids[closest_idx].pos.x - player.pos.x;
                 float dy = asteroids[closest_idx].pos.y - player.pos.y;
                 float target_angle = atan2f(dy, dx) + (float)M_PI / 2.0f;
-                // Simple snapping
                 player.angle = target_angle;
                 
                 if (closest_dist > 150.0f * 150.0f) {
@@ -1940,81 +2076,148 @@ void game_update(float delta_time) {
             }
         } else {
             const Uint8 *keys = SDL_GetKeyboardState(NULL);
-            if (keys[keybinds[KB_ROTATE_LEFT]] || keys[SDL_SCANCODE_A]) {
-                player.angle -= ROTATION_SPEED * delta_time;
-            }
-            if (keys[keybinds[KB_ROTATE_RIGHT]] || keys[SDL_SCANCODE_D]) {
-                player.angle += ROTATION_SPEED * delta_time;
-            }
-
-            // Controller input
+            int mx, my;
+            Uint32 mouse_buttons = SDL_GetMouseState(&mx, &my);
+            
+            int right_stick_active = 0;
+            float rx_val = 0.0f;
+            float ry_val = 0.0f;
+            
             if (g_controller) {
                 float deadzone = (float[]){0.1f, 0.2f, 0.35f}[settings_controller_deadzone] * 32767.0f;
                 int16_t lt = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
                 int16_t rt = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
 
                 if (settings_control_scheme == 0) {
-                    // ARCADE: left stick X = rotate
                     int16_t lx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTX);
                     if (fabsf((float)lx) > deadzone)
                         player.angle += ((float)lx / 32767.0f) * ROTATION_SPEED * delta_time * 2.5f;
-                    // LT = thrust, RT = fire (triggers)
                     if (lt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_THRUST])) thrust_key_down = 1;
                     if (rt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_FIRE]))   fire_key_down = 1;
                     twin_stick_fire_active = 0;
                 } else {
-                    // TWIN_STICK: left stick X/Y = rotate + forward thrust
                     int16_t lx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTX);
                     int16_t ly = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTY);
-                    if (fabsf((float)lx) > deadzone)
-                        player.angle += ((float)lx / 32767.0f) * ROTATION_SPEED * delta_time * 4.0f;
-                    // Push forward on left stick (ly negative = up) = thrust
-                    if ((float)-ly > deadzone * 1.2f) thrust_key_down = 1;
-                    // Right stick: aim direction + auto-fire
+                    float lmag = sqrtf((float)lx*(float)lx + (float)ly*(float)ly);
+                    if (lmag > deadzone) {
+                        move_x = (float)lx / 32767.0f;
+                        move_y = (float)ly / 32767.0f;
+                        thrust_key_down = 1;
+                    }
+                    
                     int16_t rx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_RIGHTX);
                     int16_t ry = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_RIGHTY);
                     float rmag = sqrtf((float)rx*(float)rx + (float)ry*(float)ry);
                     if (rmag > deadzone * 1.2f) {
-                        twin_stick_fire_angle  = atan2f((float)rx, -(float)ry);
+                        rx_val = (float)rx / rmag;
+                        ry_val = (float)ry / rmag;
+                        right_stick_active = 1;
+                        twin_stick_fire_angle = atan2f((float)rx, -(float)ry);
                         twin_stick_fire_active = 1;
-                        fire_key_down = 1; // auto-fire when right stick is pushed
+                        fire_key_down = 1;
                     } else {
                         twin_stick_fire_active = 0;
                     }
-                    // LT still works as thrust, RT as fire
-                    if (lt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_THRUST])) thrust_key_down = 1;
-                    if (rt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_FIRE]))   fire_key_down = 1;
+                    
+                    if (lt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_THRUST])) {
+                        thrust_key_down = 1;
+                    }
+                    if (rt > 8000 || SDL_GameControllerGetButton(g_controller, ctrl_binds[CT_FIRE])) {
+                        fire_key_down = 1;
+                    }
                 }
             }
-
-            int mx, my;
-            Uint32 mouse_buttons = SDL_GetMouseState(&mx, &my);
-
-            // Always recalculate — camera may have moved even if mouse didn't
-            if (settings_mouse_aim) {
-                float spx = player.pos.x - camera_pos.x;
-                float spy = player.pos.y - camera_pos.y;
-                float dx = (float)mx - spx;
-                float dy = (float)my - spy;
-                if (dx*dx + dy*dy > 9.0f) {
-                    player.angle = atan2f(dy, dx) + (float)M_PI_2;
+            
+            if (settings_control_scheme == 0) {
+                if (keys[keybinds[KB_ROTATE_LEFT]] || keys[SDL_SCANCODE_A]) {
+                    player.angle -= ROTATION_SPEED * delta_time;
+                }
+                if (keys[keybinds[KB_ROTATE_RIGHT]] || keys[SDL_SCANCODE_D]) {
+                    player.angle += ROTATION_SPEED * delta_time;
+                }
+                if (keys[keybinds[KB_THRUST]] || keys[SDL_SCANCODE_W] || (settings_mouse_aim && (mouse_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)))) {
+                    thrust_key_down = 1;
+                }
+                if (keys[keybinds[KB_FIRE]] || keys[SDL_SCANCODE_SPACE] || (settings_mouse_aim && (mouse_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)))) {
+                    fire_key_down = 1;
+                }
+                
+                if (settings_mouse_aim) {
+                    float spx = player.pos.x - camera_pos.x;
+                    float spy = player.pos.y - camera_pos.y;
+                    float dx = (float)mx - spx;
+                    float dy = (float)my - spy;
+                    if (dx*dx + dy*dy > 9.0f) {
+                        player.angle = atan2f(dy, dx) + (float)M_PI_2;
+                    }
+                }
+            } else {
+                float kb_x = 0.0f;
+                float kb_y = 0.0f;
+                if (keys[SDL_SCANCODE_A] || keys[keybinds[KB_ROTATE_LEFT]]) kb_x -= 1.0f;
+                if (keys[SDL_SCANCODE_D] || keys[keybinds[KB_ROTATE_RIGHT]]) kb_x += 1.0f;
+                if (keys[SDL_SCANCODE_W] || keys[keybinds[KB_THRUST]]) kb_y -= 1.0f;
+                if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN]) kb_y += 1.0f;
+                
+                if (kb_x != 0.0f || kb_y != 0.0f) {
+                    float len = sqrtf(kb_x*kb_x + kb_y*kb_y);
+                    move_x = kb_x / len;
+                    move_y = kb_y / len;
+                    thrust_key_down = 1;
+                }
+                
+                if (keys[keybinds[KB_FIRE]] || keys[SDL_SCANCODE_SPACE]) {
+                    fire_key_down = 1;
+                }
+                
+                int mouse_aim_active = 0;
+                float mouse_dx = 0.0f;
+                float mouse_dy = 0.0f;
+                if (settings_mouse_aim) {
+                    float spx = player.pos.x - camera_pos.x;
+                    float spy = player.pos.y - camera_pos.y;
+                    float dx = (float)mx - spx;
+                    float dy = (float)my - spy;
+                    if (dx*dx + dy*dy > 9.0f) {
+                        mouse_dx = dx;
+                        mouse_dy = dy;
+                        mouse_aim_active = 1;
+                    }
+                    if (mouse_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) {
+                        thrust_key_down = 1;
+                    }
+                    if (mouse_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) {
+                        fire_key_down = 1;
+                    }
+                }
+                
+                if (right_stick_active) {
+                    player.angle = atan2f(rx_val, -ry_val);
+                } else if (mouse_aim_active) {
+                    player.angle = atan2f(mouse_dx, -mouse_dy);
+                } else if (move_x != 0.0f || move_y != 0.0f) {
+                    player.angle = atan2f(move_x, -move_y);
                 }
             }
-
-            thrust_key_down = (keys[keybinds[KB_THRUST]] || keys[SDL_SCANCODE_W] || (settings_mouse_aim && (mouse_buttons & SDL_BUTTON(SDL_BUTTON_LEFT))));
-            fire_key_down   = (keys[keybinds[KB_FIRE]]   || keys[SDL_SCANCODE_SPACE] || (settings_mouse_aim && (mouse_buttons & SDL_BUTTON(SDL_BUTTON_RIGHT))));
         }
 
         static Uint32 last_thrust_tap = 0;
         static int thrust_key_was_down = 0;
         is_thrusting = thrust_key_down;
         
+        float thrust_angle = player.angle;
+        if (settings_control_scheme == 1) {
+            if (move_x != 0.0f || move_y != 0.0f) {
+                thrust_angle = atan2f(move_x, -move_y);
+            }
+        }
+
         if (thrust_key_down && !thrust_key_was_down) {
             Uint32 now = SDL_GetTicks();
             if (player_upgrades.singularity_displacer && (now - last_thrust_tap) < 300) {
                 Vec2 old_pos = player.pos;
-                player.pos.x += sinf(player.angle) * 400.0f;
-                player.pos.y -= cosf(player.angle) * 400.0f;
+                player.pos.x += sinf(thrust_angle) * 400.0f;
+                player.pos.y -= cosf(thrust_angle) * 400.0f;
                 spawn_particles(old_pos, 20, (SDL_Color){100, 100, 255, 255});
                 spawn_particles(player.pos, 20, (SDL_Color){100, 100, 255, 255});
                 audio_play(SFX_EXPLOSION_MD);
@@ -2024,12 +2227,10 @@ void game_update(float delta_time) {
         thrust_key_was_down = thrust_key_down;
 
         if (thrust_key_down) {
-            // Apply thrust in direction of nose
-            player.vel.x += sinf(player.angle) * THRUST_FORCE * player_upgrades.speed_mult * delta_time;
-            player.vel.y -= cosf(player.angle) * THRUST_FORCE * player_upgrades.speed_mult * delta_time;
+            player.vel.x += sinf(thrust_angle) * THRUST_FORCE * player_upgrades.speed_mult * delta_time;
+            player.vel.y -= cosf(thrust_angle) * THRUST_FORCE * player_upgrades.speed_mult * delta_time;
             is_thrusting = 1;
             thrust_timer += delta_time;
-            /* Drain fuel while thrusting */
             fuel_current -= 3.5f * delta_time;
             if (fuel_current < 0.0f) fuel_current = 0.0f;
             audio_play(SFX_THRUST);
@@ -2333,179 +2534,147 @@ void game_update(float delta_time) {
         }
     }
 
-    // --- Update UFO ---
-    if (ufo.active) {
-        /* Kamikaze faces movement direction (nose at +X, atan2f(y,x) maps directly) */
-        {
-            float vspd = sqrtf(ufo.vel.x * ufo.vel.x + ufo.vel.y * ufo.vel.y);
-            if (ufo.size == 3 && vspd > 1.0f)
-                ufo.angle = atan2f(ufo.vel.y, ufo.vel.x);
+// --- Update UFO ---
+if (ufo.active) {
+    /* Kamikaze faces movement direction (nose at +X, atan2f(y,x) maps directly) */
+    {
+        float vspd = sqrtf(ufo.vel.x * ufo.vel.x + ufo.vel.y * ufo.vel.y);
+        if (ufo.size == 3 && vspd > 1.0f)
+            ufo.angle = atan2f(ufo.vel.y, ufo.vel.x);
+    }
+    /* Record trail */
+    ufo.trail_pos[ufo.trail_head] = ufo.pos;
+    ufo.trail_ang[ufo.trail_head] = ufo.angle;
+    ufo.trail_head = (ufo.trail_head + 1) % PHOS_TRAIL_LEN;
+
+    Vec2 ext_f = calculate_external_forces(ufo.pos);
+    ufo.vel.x += ext_f.x * delta_time;
+    ufo.vel.y += ext_f.y * delta_time;
+
+    if (ufo.size == 3 && player.active) {
+        // Vector Stalker (Kamikaze)
+        float dx = player.pos.x - ufo.pos.x;
+        float dy = player.pos.y - ufo.pos.y;
+        float dist = sqrtf(dx*dx + dy*dy);
+        float t = dist / 200.0f;
+        Vec2 p_target = { player.pos.x + player.vel.x * t, player.pos.y + player.vel.y * t };
+        
+        float target_dx = p_target.x - ufo.pos.x;
+        float target_dy = p_target.y - ufo.pos.y;
+        float target_dist = sqrtf(target_dx*target_dx + target_dy*target_dy);
+        if (target_dist > 0.1f) {
+            ufo.vel.x = (target_dx / target_dist) * 200.0f;
+            ufo.vel.y = (target_dy / target_dist) * 200.0f;
         }
-        /* Record trail */
-        ufo.trail_pos[ufo.trail_head] = ufo.pos;
-        ufo.trail_ang[ufo.trail_head] = ufo.angle;
-        ufo.trail_head = (ufo.trail_head + 1) % PHOS_TRAIL_LEN;
-
-        Vec2 ext_f = calculate_external_forces(ufo.pos);
-        ufo.vel.x += ext_f.x * delta_time;
-        ufo.vel.y += ext_f.y * delta_time;
-
-        if (ufo.size == 3 && player.active) {
-            // Vector Stalker (Kamikaze)
+        ufo.pos.x += ufo.vel.x * delta_time;
+        ufo.pos.y += ufo.vel.y * delta_time;
+    } else if (ufo.size == 4) {
+        // Boundary Weaver (Bomber)
+        ufo.pos.x += ufo.vel.x * delta_time;
+        float dy = ufo.target_y - ufo.pos.y;
+        ufo.pos.y += dy * 2.0f * delta_time;
+    } else if (ufo.size == 5) {
+        // Eye of the Void (Gravitational Harvester)
+        ufo.pos.x += ufo.vel.x * 0.3f * delta_time; 
+        ufo.pos.y += sinf(SDL_GetTicks() / 500.0f) * 20.0f * delta_time; 
+    } else if (ufo.size == 6) {
+        /* Eldritch Tendril: sinusoidal drift, approaches slowly */
+        if (player.active) {
             float dx = player.pos.x - ufo.pos.x;
             float dy = player.pos.y - ufo.pos.y;
-            float dist = sqrtf(dx*dx + dy*dy);
-            float t = dist / 200.0f;
-            Vec2 p_target = { player.pos.x + player.vel.x * t, player.pos.y + player.vel.y * t };
-            
-            float target_dx = p_target.x - ufo.pos.x;
-            float target_dy = p_target.y - ufo.pos.y;
-            float target_dist = sqrtf(target_dx*target_dx + target_dy*target_dy);
-            if (target_dist > 0.1f) {
-                ufo.vel.x = (target_dx / target_dist) * 200.0f;
-                ufo.vel.y = (target_dy / target_dist) * 200.0f;
-            }
-            ufo.pos.x += ufo.vel.x * delta_time;
-            ufo.pos.y += ufo.vel.y * delta_time;
-        } else if (ufo.size == 4) {
-            // Boundary Weaver (Bomber)
-            ufo.pos.x += ufo.vel.x * delta_time;
-            float dy = ufo.target_y - ufo.pos.y;
-            ufo.pos.y += dy * 2.0f * delta_time;
-            
-            if ((ufo.vel.x > 0.0f && ufo.pos.x > camera_pos.x + SCREEN_WIDTH + ufo.radius) || 
-                (ufo.vel.x < 0.0f && ufo.pos.x < camera_pos.x - ufo.radius)) {
-                ufo.active = 0;
-                audio_stop(SFX_UFO_LOOP);
-                ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
-            }
-        } else if (ufo.size == 5) {
-            // Eye of the Void (Gravitational Harvester)
-            ufo.pos.x += ufo.vel.x * 0.3f * delta_time; 
-            ufo.pos.y += sinf(SDL_GetTicks() / 500.0f) * 20.0f * delta_time; 
-            
-            if ((ufo.vel.x > 0.0f && ufo.pos.x > camera_pos.x + SCREEN_WIDTH + ufo.radius) || 
-                (ufo.vel.x < 0.0f && ufo.pos.x < camera_pos.x - ufo.radius)) {
-                ufo.active = 0;
-                audio_stop(SFX_UFO_LOOP);
-                ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
-            }
-        } else if (ufo.size == 6) {
-            /* Eldritch Tendril: sinusoidal drift, approaches slowly */
-            if (player.active) {
-                float dx = player.pos.x - ufo.pos.x;
-                float dy = player.pos.y - ufo.pos.y;
-                float d  = sqrtf(dx*dx + dy*dy);
-                if (d > 0.1f) { ufo.vel.x += (dx/d)*30.0f*delta_time; ufo.vel.y += (dy/d)*30.0f*delta_time; }
-            }
-            float t6 = SDL_GetTicks() / 800.0f;
-            ufo.vel.x += cosf(t6 * 1.3f) * 40.0f * delta_time;
-            ufo.vel.y += sinf(t6 * 0.9f) * 40.0f * delta_time;
-            float spd6 = sqrtf(ufo.vel.x*ufo.vel.x + ufo.vel.y*ufo.vel.y);
-            if (spd6 > 120.0f) { ufo.vel.x = ufo.vel.x/spd6*120.0f; ufo.vel.y = ufo.vel.y/spd6*120.0f; }
-            ufo.pos.x += ufo.vel.x * delta_time;
-            ufo.pos.y += ufo.vel.y * delta_time;
-            ufo.angle = atan2f(ufo.vel.y, ufo.vel.x);
-            if (!player.active || sqrtf((ufo.pos.x-player.pos.x)*(ufo.pos.x-player.pos.x)+(ufo.pos.y-player.pos.y)*(ufo.pos.y-player.pos.y)) > 1400.0f) {
-                ufo.active = 0; audio_stop(SFX_UFO_LOOP);
-                ufo_spawn_timer = 18.0f + ((float)rand()/RAND_MAX)*12.0f;
-            }
-        } else if (ufo.size == 7) {
-            /* Daemon Sigil: erratic teleport-lurches + fast spin */
-            ufo.angle += 3.0f * delta_time;
-            ufo.change_dir_timer -= delta_time;
-            if (ufo.change_dir_timer <= 0.0f) {
-                ufo.change_dir_timer = 0.8f + ((float)rand()/RAND_MAX)*1.2f;
-                float a7 = ((float)rand()/RAND_MAX) * 2.0f * (float)M_PI;
-                float lurch = 80.0f + ((float)rand()/RAND_MAX)*80.0f;
-                ufo.pos.x += cosf(a7)*lurch; ufo.pos.y += sinf(a7)*lurch;
-                ufo.vel.x = cosf(a7)*160.0f; ufo.vel.y = sinf(a7)*160.0f;
-            }
-            ufo.pos.x += ufo.vel.x * delta_time;
-            ufo.pos.y += ufo.vel.y * delta_time;
-            ufo.vel.x *= (1.0f - 1.5f*delta_time);
-            ufo.vel.y *= (1.0f - 1.5f*delta_time);
-            if (!player.active || sqrtf((ufo.pos.x-player.pos.x)*(ufo.pos.x-player.pos.x)+(ufo.pos.y-player.pos.y)*(ufo.pos.y-player.pos.y)) > 1400.0f) {
-                ufo.active = 0; audio_stop(SFX_UFO_LOOP);
-                ufo_spawn_timer = 18.0f + ((float)rand()/RAND_MAX)*12.0f;
-            }
-        } else {
-            // Normal UFO (1 or 2)
-            ufo.pos.x += ufo.vel.x * delta_time;
-            ufo.change_dir_timer -= delta_time;
-            if (ufo.change_dir_timer <= 0.0f) {
-                ufo.change_dir_timer = 1.0f + ((float)rand() / RAND_MAX) * 1.5f;
-                ufo.vel.y = (-1.0f + 2.0f * (rand() % 2)) * 60.0f;
-            }
-            ufo.pos.y += ufo.vel.y * delta_time;
-            
-            if (ufo.pos.y < camera_pos.y + 50.0f) { ufo.pos.y = camera_pos.y + 50.0f; ufo.vel.y = -ufo.vel.y; }
-            if (ufo.pos.y > camera_pos.y + SCREEN_HEIGHT - 50.0f) { ufo.pos.y = camera_pos.y + SCREEN_HEIGHT - 50.0f; ufo.vel.y = -ufo.vel.y; }
- 
-            if ((ufo.vel.x > 0.0f && ufo.pos.x > camera_pos.x + SCREEN_WIDTH + ufo.radius) || 
-                (ufo.vel.x < 0.0f && ufo.pos.x < camera_pos.x - ufo.radius)) {
-                ufo.active = 0;
-                audio_stop(SFX_UFO_LOOP);
-                ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
-            }
+            float d  = sqrtf(dx*dx + dy*dy);
+            if (d > 0.1f) { ufo.vel.x += (dx/d)*30.0f*delta_time; ufo.vel.y += (dy/d)*30.0f*delta_time; }
         }
-
-        // General distance deactivation for all UFOs in free roam
-        if (player.active && distance_sq(ufo.pos, player.pos) > 1600.0f * 1600.0f) {
-            ufo.active = 0;
-            audio_stop(SFX_UFO_LOOP);
-            ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
+        float t6 = SDL_GetTicks() / 800.0f;
+        ufo.vel.x += cosf(t6 * 1.3f) * 40.0f * delta_time;
+        ufo.vel.y += sinf(t6 * 0.9f) * 40.0f * delta_time;
+        float spd6 = sqrtf(ufo.vel.x*ufo.vel.x + ufo.vel.y*ufo.vel.y);
+        if (spd6 > 120.0f) { ufo.vel.x = ufo.vel.x/spd6*120.0f; ufo.vel.y = ufo.vel.y/spd6*120.0f; }
+        ufo.pos.x += ufo.vel.x * delta_time;
+        ufo.pos.y += ufo.vel.y * delta_time;
+        ufo.angle = atan2f(ufo.vel.y, ufo.vel.x);
+    } else if (ufo.size == 7) {
+        /* Daemon Sigil: erratic teleport-lurches + fast spin */
+        ufo.angle += 3.0f * delta_time;
+        ufo.change_dir_timer -= delta_time;
+        if (ufo.change_dir_timer <= 0.0f) {
+            ufo.change_dir_timer = 0.8f + ((float)rand()/RAND_MAX)*1.2f;
+            float a7 = ((float)rand()/RAND_MAX) * 2.0f * (float)M_PI;
+            float lurch = 80.0f + ((float)rand()/RAND_MAX)*80.0f;
+            ufo.pos.x += cosf(a7)*lurch; ufo.pos.y += sinf(a7)*lurch;
+            ufo.vel.x = cosf(a7)*160.0f; ufo.vel.y = sinf(a7)*160.0f;
         }
+        ufo.pos.x += ufo.vel.x * delta_time;
+        ufo.pos.y += ufo.vel.y * delta_time;
+        ufo.vel.x *= (1.0f - 1.5f*delta_time);
+        ufo.vel.y *= (1.0f - 1.5f*delta_time);
+    } else {
+        // Normal UFO (1 or 2)
+        ufo.pos.x += ufo.vel.x * delta_time;
+        ufo.change_dir_timer -= delta_time;
+        if (ufo.change_dir_timer <= 0.0f) {
+            ufo.change_dir_timer = 1.0f + ((float)rand() / RAND_MAX) * 1.5f;
+            ufo.vel.y = (-1.0f + 2.0f * (rand() % 2)) * 60.0f;
+        }
+        ufo.pos.y += ufo.vel.y * delta_time;
+    }
 
-        // Firing logic
-        if (ufo.active) {
-            ufo.fire_timer -= delta_time;
-            if (ufo.fire_timer <= 0.0f && player.active) {
-                /* Fire rate varies by type */
-                if      (ufo.size == 6) ufo.fire_timer = 2.2f;
-                else if (ufo.size == 7) ufo.fire_timer = 0.7f;
-                else ufo.fire_timer = (ufo.size == 2) ? 1.5f : 1.0f;
-                
-                // Look for empty UFO bullet slot
-                for (int i = 0; i < MAX_UFO_BULLETS; i++) {
-                    if (!ufo_bullets[i].active) {
-                        ufo_bullets[i].active = 1;
-                        ufo_bullets[i].life = BULLET_LIFE;
-                        ufo_bullets[i].pos = ufo.pos;
-                        ufo_bullets[i].trail_head = 0;
-                        for (int t = 0; t < PHOS_TRAIL_LEN; t++) {
-                            ufo_bullets[i].trail_pos[t] = ufo.pos;
-                            ufo_bullets[i].trail_ang[t] = 0.0f;
-                        }
-                        
-                        float fire_angle = 0.0f;
-                        if (ufo.size == 2) {
-                            // Large UFO fires in complete random direction
-                            fire_angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
-                        } else {
-                            // Small UFO targets player directly + minor scatter
-                            float dx = player.pos.x - ufo.pos.x;
-                            float dy = player.pos.y - ufo.pos.y;
-                            fire_angle = atan2f(dx, -dy);
-                            float accuracy_offset = -0.3f + 0.6f * ((float)rand() / RAND_MAX);
-                            fire_angle += accuracy_offset * (4.0f / (3.0f + level)); // accuracy gets better in high levels
-                        }
-                        
-                        ufo_bullets[i].vel.x = sinf(fire_angle) * (BULLET_SPEED - 150.0f);
-                        ufo_bullets[i].vel.y = -cosf(fire_angle) * (BULLET_SPEED - 150.0f);
-                        ufo_bullets[i].color = (SDL_Color){255, 120, 120, 255}; // Reddish UFO bullets
-                        audio_play(SFX_UFO_FIRE);
-                        break;
+    // General distance deactivation for all UFOs in free roam
+    if (player.active && distance_sq(ufo.pos, player.pos) > 3500.0f * 3500.0f) {
+        ufo.active = 0;
+        audio_stop(SFX_UFO_LOOP);
+        ufo_spawn_timer = 20.0f + ((float)rand() / RAND_MAX) * 15.0f;
+    }
+
+    // Firing logic
+    if (ufo.active) {
+        ufo.fire_timer -= delta_time;
+        if (ufo.fire_timer <= 0.0f && player.active) {
+            /* Fire rate varies by type */
+            if      (ufo.size == 6) ufo.fire_timer = 2.2f;
+            else if (ufo.size == 7) ufo.fire_timer = 0.7f;
+            else ufo.fire_timer = (ufo.size == 2) ? 1.5f : 1.0f;
+            
+            // Look for empty UFO bullet slot
+            for (int i = 0; i < MAX_UFO_BULLETS; i++) {
+                if (!ufo_bullets[i].active) {
+                    ufo_bullets[i].active = 1;
+                    ufo_bullets[i].life = BULLET_LIFE;
+                    ufo_bullets[i].pos = ufo.pos;
+                    ufo_bullets[i].trail_head = 0;
+                    for (int t = 0; t < PHOS_TRAIL_LEN; t++) {
+                        ufo_bullets[i].trail_pos[t] = ufo.pos;
+                        ufo_bullets[i].trail_ang[t] = 0.0f;
                     }
+                    
+                    float fire_angle = 0.0f;
+                    if (ufo.size == 2) {
+                        // Large UFO fires in complete random direction
+                        fire_angle = ((float)rand() / RAND_MAX) * 2.0f * (float)M_PI;
+                    } else {
+                        // Small UFO targets player directly + minor scatter
+                        float dx = player.pos.x - ufo.pos.x;
+                        float dy = player.pos.y - ufo.pos.y;
+                        fire_angle = atan2f(dx, -dy);
+                        float accuracy_offset = -0.3f + 0.6f * ((float)rand() / RAND_MAX);
+                        fire_angle += accuracy_offset * (4.0f / (3.0f + level)); // accuracy gets better in high levels
+                    }
+                    
+                    ufo_bullets[i].vel.x = sinf(fire_angle) * (BULLET_SPEED - 150.0f);
+                    ufo_bullets[i].vel.y = -cosf(fire_angle) * (BULLET_SPEED - 150.0f);
+                    ufo_bullets[i].color = (SDL_Color){255, 120, 120, 255}; // Reddish UFO bullets
+                    audio_play(SFX_UFO_FIRE);
+                    break;
                 }
             }
         }
-    } else {
-        ufo_spawn_timer -= delta_time;
-        if (ufo_spawn_timer <= 0.0f) {
-            spawn_ufo();
-        }
     }
+} else {
+    ufo_spawn_timer -= delta_time;
+    if (ufo_spawn_timer <= 0.0f) {
+        spawn_ufo();
+    }
+}
 
 
     /* ─── Update zone, structures, NPCs ─────────────────────────── */
@@ -2970,6 +3139,300 @@ void game_update(float delta_time) {
     }
 }
 
+/* Gamepad button position locator */
+static Vec2 get_controller_button_pos(SDL_GameControllerButton btn, float cx, float cy) {
+    float f_cx = cx + 70.0f;
+    float f_cy = cy - 20.0f;
+    switch (btn) {
+        case SDL_CONTROLLER_BUTTON_A:
+            return (Vec2){f_cx, f_cy + 25.0f};
+        case SDL_CONTROLLER_BUTTON_B:
+            return (Vec2){f_cx + 25.0f, f_cy};
+        case SDL_CONTROLLER_BUTTON_X:
+            return (Vec2){f_cx - 25.0f, f_cy};
+        case SDL_CONTROLLER_BUTTON_Y:
+            return (Vec2){f_cx, f_cy - 25.0f};
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+            return (Vec2){cx - 82.0f, cy - 63.0f};
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+            return (Vec2){cx + 82.0f, cy - 63.0f};
+        case SDL_CONTROLLER_BUTTON_BACK:
+            return (Vec2){cx - 20.0f, cy - 20.0f};
+        case SDL_CONTROLLER_BUTTON_START:
+            return (Vec2){cx + 20.0f, cy - 20.0f};
+        case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+            return (Vec2){cx - 70.0f, cy - 20.0f};
+        case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
+            return (Vec2){cx + 30.0f, cy + 30.0f};
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            return (Vec2){cx - 30.0f, cy + 15.0f};
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            return (Vec2){cx - 30.0f, cy + 45.0f};
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            return (Vec2){cx - 45.0f, cy + 30.0f};
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            return (Vec2){cx - 15.0f, cy + 30.0f};
+        case SDL_CONTROLLER_BUTTON_GUIDE:
+            return (Vec2){cx, cy - 20.0f};
+        default:
+            return (Vec2){cx, cy};
+    }
+}
+
+/* Draw vector gamepad shell */
+static void draw_gamepad(float cx, float cy, int highlighted_btn) {
+    SDL_Color base_color = (SDL_Color){100, 255, 255, 120};
+    SDL_Color highlight_color = (SDL_Color){255, 220, 80, 255};
+    
+    // 1. Controller outer shell
+    Line shell[] = {
+        {{cx - 130, cy - 60}, {cx + 130, cy - 60}},
+        {{cx - 130, cy - 60}, {cx - 170, cy - 30}},
+        {{cx + 130, cy - 60}, {cx + 170, cy - 30}},
+        {{cx - 170, cy - 30}, {cx - 145, cy + 95}},
+        {{cx + 170, cy - 30}, {cx + 145, cy + 95}},
+        {{cx - 145, cy + 95}, {cx - 95, cy + 95}},
+        {{cx + 145, cy + 95}, {cx + 95, cy + 95}},
+        {{cx - 95, cy + 95}, {cx - 60, cy + 25}},
+        {{cx + 95, cy + 95}, {cx + 60, cy + 25}},
+        {{cx - 60, cy + 25}, {cx, cy + 40}},
+        {{cx, cy + 40}, {cx + 60, cy + 25}}
+    };
+    Shape shell_shape = {shell, sizeof(shell)/sizeof(Line), base_color};
+    vg_draw_shape(&shell_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    // 2. Bumpers
+    SDL_Color lb_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) ? highlight_color : base_color;
+    Line lb[] = {
+        {{cx - 125, cy - 68}, {cx - 40, cy - 64}},
+        {{cx - 40, cy - 64}, {cx - 43, cy - 58}},
+        {{cx - 43, cy - 58}, {cx - 120, cy - 62}},
+        {{cx - 120, cy - 62}, {cx - 125, cy - 68}}
+    };
+    Shape lb_shape = {lb, sizeof(lb)/sizeof(Line), lb_color};
+    vg_draw_shape(&lb_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    SDL_Color rb_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? highlight_color : base_color;
+    Line rb[] = {
+        {{cx + 125, cy - 68}, {cx + 40, cy - 64}},
+        {{cx + 40, cy - 64}, {cx + 43, cy - 58}},
+        {{cx + 43, cy - 58}, {cx + 120, cy - 62}},
+        {{cx + 120, cy - 62}, {cx + 125, cy - 68}}
+    };
+    Shape rb_shape = {rb, sizeof(rb)/sizeof(Line), rb_color};
+    vg_draw_shape(&rb_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    // 3. Triggers (LT/RT)
+    Line lt[] = {
+        {{cx - 120, cy - 83}, {cx - 70, cy - 80}},
+        {{cx - 70, cy - 80}, {cx - 68, cy - 70}},
+        {{cx - 68, cy - 70}, {cx - 115, cy - 73}},
+        {{cx - 115, cy - 73}, {cx - 120, cy - 83}}
+    };
+    Shape lt_shape = {lt, sizeof(lt)/sizeof(Line), base_color};
+    vg_draw_shape(&lt_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line rt[] = {
+        {{cx + 120, cy - 83}, {cx + 70, cy - 80}},
+        {{cx + 70, cy - 80}, {cx + 68, cy - 70}},
+        {{cx + 68, cy - 70}, {cx + 115, cy - 73}},
+        {{cx + 115, cy - 73}, {cx + 120, cy - 83}}
+    };
+    Shape rt_shape = {rt, sizeof(rt)/sizeof(Line), base_color};
+    vg_draw_shape(&rt_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    // 4. Sticks (LSTICK & RSTICK)
+    float ls_x = cx - 70.0f, ls_y = cy - 20.0f;
+    SDL_Color ls_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_LEFTSTICK) ? highlight_color : base_color;
+    Line ls_circle[12];
+    for (int i = 0; i < 12; i++) {
+        float a1 = i * 2.0f * (float)M_PI / 12.0f;
+        float a2 = (i + 1) * 2.0f * (float)M_PI / 12.0f;
+        ls_circle[i].p1 = (Vec2){ls_x + cosf(a1) * 20.0f, ls_y + sinf(a1) * 20.0f};
+        ls_circle[i].p2 = (Vec2){ls_x + cosf(a2) * 20.0f, ls_y + sinf(a2) * 20.0f};
+    }
+    Shape ls_shape = {ls_circle, 12, ls_color};
+    vg_draw_shape(&ls_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line ls_cross[] = {{{ls_x - 12.0f, ls_y}, {ls_x + 12.0f, ls_y}}, {{ls_x, ls_y - 12.0f}, {ls_x, ls_y + 12.0f}}};
+    Shape ls_cross_shape = {ls_cross, 2, ls_color};
+    vg_draw_shape(&ls_cross_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    float rs_x = cx + 30.0f, rs_y = cy + 30.0f;
+    SDL_Color rs_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_RIGHTSTICK) ? highlight_color : base_color;
+    Line rs_circle[12];
+    for (int i = 0; i < 12; i++) {
+        float a1 = i * 2.0f * (float)M_PI / 12.0f;
+        float a2 = (i + 1) * 2.0f * (float)M_PI / 12.0f;
+        rs_circle[i].p1 = (Vec2){rs_x + cosf(a1) * 20.0f, rs_y + sinf(a1) * 20.0f};
+        rs_circle[i].p2 = (Vec2){rs_x + cosf(a2) * 20.0f, rs_y + sinf(a2) * 20.0f};
+    }
+    Shape rs_shape = {rs_circle, 12, rs_color};
+    vg_draw_shape(&rs_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line rs_cross[] = {{{rs_x - 12.0f, rs_y}, {rs_x + 12.0f, rs_y}}, {{rs_x, rs_y - 12.0f}, {rs_x, rs_y + 12.0f}}};
+    Shape rs_cross_shape = {rs_cross, 2, rs_color};
+    vg_draw_shape(&rs_cross_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    // 5. D-pad
+    float dp_x = cx - 30.0f, dp_y = cy + 30.0f;
+    SDL_Color dp_u_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_DPAD_UP) ? highlight_color : base_color;
+    SDL_Color dp_d_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN) ? highlight_color : base_color;
+    SDL_Color dp_l_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_DPAD_LEFT) ? highlight_color : base_color;
+    SDL_Color dp_r_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ? highlight_color : base_color;
+    
+    Line dp_top[] = {{{dp_x - 6.0f, dp_y - 20.0f}, {dp_x + 6.0f, dp_y - 20.0f}}, {{dp_x - 6.0f, dp_y - 20.0f}, {dp_x - 6.0f, dp_y - 6.0f}}, {{dp_x + 6.0f, dp_y - 20.0f}, {dp_x + 6.0f, dp_y - 6.0f}}};
+    Shape dp_top_shape = {dp_top, 3, dp_u_color};
+    vg_draw_shape(&dp_top_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line dp_bot[] = {{{dp_x - 6.0f, dp_y + 20.0f}, {dp_x + 6.0f, dp_y + 20.0f}}, {{dp_x - 6.0f, dp_y + 20.0f}, {dp_x - 6.0f, dp_y + 6.0f}}, {{dp_x + 6.0f, dp_y + 20.0f}, {dp_x + 6.0f, dp_y + 6.0f}}};
+    Shape dp_bot_shape = {dp_bot, 3, dp_d_color};
+    vg_draw_shape(&dp_bot_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line dp_left[] = {{{dp_x - 20.0f, dp_y - 6.0f}, {dp_x - 20.0f, dp_y + 6.0f}}, {{dp_x - 20.0f, dp_y - 6.0f}, {dp_x - 6.0f, dp_y - 6.0f}}, {{dp_x - 20.0f, dp_y + 6.0f}, {dp_x - 6.0f, dp_y + 6.0f}}};
+    Shape dp_left_shape = {dp_left, 3, dp_l_color};
+    vg_draw_shape(&dp_left_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line dp_right[] = {{{dp_x + 20.0f, dp_y - 6.0f}, {dp_x + 20.0f, dp_y + 6.0f}}, {{dp_x + 20.0f, dp_y - 6.0f}, {dp_x + 6.0f, dp_y - 6.0f}}, {{dp_x + 20.0f, dp_y + 6.0f}, {dp_x + 6.0f, dp_y + 6.0f}}};
+    Shape dp_right_shape = {dp_right, 3, dp_r_color};
+    vg_draw_shape(&dp_right_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line dp_mid[] = {{{dp_x - 6.0f, dp_y - 6.0f}, {dp_x + 6.0f, dp_y - 6.0f}}, {{dp_x + 6.0f, dp_y - 6.0f}, {dp_x + 6.0f, dp_y + 6.0f}}, {{dp_x + 6.0f, dp_y + 6.0f}, {dp_x - 6.0f, dp_y + 6.0f}}, {{dp_x - 6.0f, dp_y + 6.0f}, {dp_x - 6.0f, dp_y - 6.0f}}};
+    Shape dp_mid_shape = {dp_mid, 4, base_color};
+    vg_draw_shape(&dp_mid_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    // 6. Face Buttons (A, B, X, Y)
+    float f_cx = cx + 70.0f, f_cy = cy - 20.0f;
+    SDL_Color a_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_A) ? highlight_color : base_color;
+    SDL_Color b_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_B) ? highlight_color : base_color;
+    SDL_Color x_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_X) ? highlight_color : base_color;
+    SDL_Color y_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_Y) ? highlight_color : base_color;
+    float btn_r = 7.0f;
+    float btn_positions[][2] = {
+        {f_cx, f_cy + 25.0f},
+        {f_cx + 25.0f, f_cy},
+        {f_cx - 25.0f, f_cy},
+        {f_cx, f_cy - 25.0f}
+    };
+    SDL_Color btn_colors[] = {a_color, b_color, x_color, y_color};
+    const char* btn_lbls[] = {"A", "B", "X", "Y"};
+    for (int b = 0; b < 4; b++) {
+        float bx = btn_positions[b][0];
+        float by = btn_positions[b][1];
+        Line b_circle[8];
+        for (int i = 0; i < 8; i++) {
+            float a1 = i * 2.0f * (float)M_PI / 8.0f;
+            float a2 = (i + 1) * 2.0f * (float)M_PI / 8.0f;
+            b_circle[i].p1 = (Vec2){bx + cosf(a1) * btn_r, by + sinf(a1) * btn_r};
+            b_circle[i].p2 = (Vec2){bx + cosf(a2) * btn_r, by + sinf(a2) * btn_r};
+        }
+        Shape b_shape = {b_circle, 8, btn_colors[b]};
+        vg_draw_shape(&b_shape, (Vec2){0,0}, 0.0f, 1.0f);
+        vf_draw_string(btn_lbls[b], bx - 3.5f, by - 5.0f, 10.0f, btn_colors[b]);
+    }
+    
+    // 7. Back & Start Buttons
+    SDL_Color back_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_BACK) ? highlight_color : base_color;
+    SDL_Color start_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_START) ? highlight_color : base_color;
+    Line back_btn[4] = {
+        {{cx - 25.0f, cy - 23.0f}, {cx - 15.0f, cy - 23.0f}},
+        {{cx - 15.0f, cy - 23.0f}, {cx - 15.0f, cy - 17.0f}},
+        {{cx - 15.0f, cy - 17.0f}, {cx - 25.0f, cy - 17.0f}},
+        {{cx - 25.0f, cy - 17.0f}, {cx - 25.0f, cy - 23.0f}}
+    };
+    Shape back_shape = {back_btn, 4, back_color};
+    vg_draw_shape(&back_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line start_btn[4] = {
+        {{cx + 15.0f, cy - 23.0f}, {cx + 25.0f, cy - 23.0f}},
+        {{cx + 25.0f, cy - 23.0f}, {cx + 25.0f, cy - 17.0f}},
+        {{cx + 25.0f, cy - 17.0f}, {cx + 15.0f, cy - 17.0f}},
+        {{cx + 15.0f, cy - 17.0f}, {cx + 15.0f, cy - 23.0f}}
+    };
+    Shape start_shape = {start_btn, 4, start_color};
+    vg_draw_shape(&start_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    SDL_Color guide_color = (highlighted_btn == SDL_CONTROLLER_BUTTON_GUIDE) ? highlight_color : base_color;
+    Line guide_circle[10];
+    for (int i = 0; i < 10; i++) {
+        float a1 = i * 2.0f * (float)M_PI / 10.0f;
+        float a2 = (i + 1) * 2.0f * (float)M_PI / 10.0f;
+        guide_circle[i].p1 = (Vec2){cx + cosf(a1) * 11.0f, cy - 20.0f + sinf(a1) * 11.0f};
+        guide_circle[i].p2 = (Vec2){cx + cosf(a2) * 11.0f, cy - 20.0f + sinf(a2) * 11.0f};
+    }
+    Shape guide_shape = {guide_circle, 10, guide_color};
+    vg_draw_shape(&guide_shape, (Vec2){0,0}, 0.0f, 1.0f);
+    
+    Line guide_x[] = {{{cx - 4.0f, cy - 24.0f}, {cx + 4.0f, cy - 16.0f}}, {{cx - 4.0f, cy - 16.0f}, {cx + 4.0f, cy - 24.0f}}};
+    Shape guide_x_shape = {guide_x, 2, guide_color};
+    vg_draw_shape(&guide_x_shape, (Vec2){0,0}, 0.0f, 1.0f);
+}
+
+/* Controller Binds Rendering Code (to be placed in STATE_KEYBINDS rendering branch in game_render) */
+static void render_controller_binds_page(float cx, float cy, int keybind_selection, SDL_GameControllerButton* ctrl_binds, const char** ct_action_names) {
+    static const char* btn_names[] = {
+        "A","B","X","Y","BACK","GUIDE","START","LSTICK","RSTICK",
+        "LB","RB","DPAD_UP","DPAD_DOWN","DPAD_LEFT","DPAD_RIGHT","MISC"
+    };
+    vf_draw_string_centered("ENTER TO REBIND   Q/E TO SWITCH", SCREEN_WIDTH/2.0f, 100, 12.0f, (SDL_Color){100,100,120,255});
+    
+    int highlighted_btn = (int)ctrl_binds[keybind_selection];
+    draw_gamepad(cx, cy, highlighted_btn);
+    
+    for (int i = 0; i < CT_COUNT; i++) {
+        int is_selected = (keybind_selection == i);
+        SDL_Color color = is_selected ? (SDL_Color){255, 220, 80, 255} : (SDL_Color){100, 255, 255, 255};
+        SDL_Color line_color = is_selected ? (SDL_Color){255, 220, 80, 255} : (SDL_Color){100, 255, 255, 60};
+        
+        int bval = (int)ctrl_binds[i];
+        const char* bname = (bval >= 0 && bval < 16) ? btn_names[bval] : "UNBOUND";
+        
+        char row[64];
+        sprintf(row, "%s: %s", ct_action_names[i], bname);
+        
+        float ax, ay, ax_mid;
+        if (i < 4) {
+            // Left side
+            ax = 390.0f;
+            ay = 220.0f + i * 110.0f;
+            ax_mid = ax + 40.0f;
+            
+            vf_draw_string(row, 120.0f, ay - 6.0f, 15.0f, color);
+            if (is_selected) {
+                vf_draw_string(">", 95.0f, ay - 6.0f, 15.0f, color);
+            }
+        } else {
+            // Right side
+            ax = 890.0f;
+            ay = 220.0f + (i - 4) * 110.0f;
+            ax_mid = ax - 40.0f;
+            
+            vf_draw_string(row, 920.0f, ay - 6.0f, 15.0f, color);
+            if (is_selected) {
+                vf_draw_string(">", 895.0f, ay - 6.0f, 15.0f, color);
+            }
+        }
+        
+        if (bval >= 0 && bval < 16) {
+            Vec2 bpos = get_controller_button_pos(ctrl_binds[i], cx, cy);
+            Line conn[2] = {
+                {{ax, ay}, {ax_mid, ay}},
+                {{ax_mid, ay}, {bpos.x, bpos.y}}
+            };
+            Shape conn_shape = {conn, 2, line_color};
+            vg_draw_shape(&conn_shape, (Vec2){0,0}, 0.0f, 1.0f);
+            
+            Line dot_anchor[] = {{{ax-1.0f, ay}, {ax+1.0f, ay}}, {{ax, ay-1.0f}, {ax, ay+1.0f}}};
+            Shape dot_a_shape = {dot_anchor, 2, line_color};
+            vg_draw_shape(&dot_a_shape, (Vec2){0,0}, 0.0f, 1.0f);
+            
+            Line dot_btn[] = {{{bpos.x-1.0f, bpos.y}, {bpos.x+1.0f, bpos.y}}, {{bpos.x, bpos.y-1.0f}, {bpos.x, bpos.y+1.0f}}};
+            Shape dot_b_shape = {dot_btn, 2, line_color};
+            vg_draw_shape(&dot_b_shape, (Vec2){0,0}, 0.0f, 1.0f);
+        }
+    }
+}
+
 void game_render() {
     SDL_Color main_color = {220, 240, 255, 255}; // Glowing cool white/light cyan phosphor
     
@@ -3358,15 +3821,37 @@ void game_render() {
                 for (int i=0;i<2;i++){Shape s={&hl[i],1,(SDL_Color){100,255,255,255}};vg_draw_shape(&s,(Vec2){0,0},0.0f,1.0f);}
             }
         }
-        /* Asteroids (dim gray) */
+/* Asteroids (5x5 crosses, gray) */
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             if (!asteroids[i].active) continue;
             float ax = mcx + (asteroids[i].pos.x - player.pos.x) * scx;
             float ay = mcy + (asteroids[i].pos.y - player.pos.y) * scy;
-            if (ax < mmx || ax > mmx+mmw || ay < mmy || ay > mmy+mmh) continue;
-            Line l = {{ax,ay},{ax+1,ay+1}};
-            Shape s = {&l,1,(SDL_Color){90,90,90,160}};
-            vg_draw_shape(&s,(Vec2){0,0},0.0f,1.0f);
+            if (ax >= mmx && ax <= mmx + mmw && ay >= mmy && ay <= mmy + mmh) {
+                Line al[2] = {
+                    {{ax - 2, ay}, {ax + 2, ay}},
+                    {{ax, ay - 2}, {ax, ay + 2}}
+                };
+                for (int j = 0; j < 2; j++) {
+                    Shape s = {&al[j], 1, (SDL_Color){128, 128, 128, 255}};
+                    vg_draw_shape(&s, (Vec2){0, 0}, 0.0f, 1.0f);
+                }
+            }
+        }
+        /* UFO Bullets / Enemy Bullets (5x5 crosses, red) */
+        for (int i = 0; i < MAX_UFO_BULLETS; i++) {
+            if (!ufo_bullets[i].active) continue;
+            float bx = mcx + (ufo_bullets[i].pos.x - player.pos.x) * scx;
+            float by = mcy + (ufo_bullets[i].pos.y - player.pos.y) * scy;
+            if (bx >= mmx && bx <= mmx + mmw && by >= mmy && by <= mmy + mmh) {
+                Line bl[2] = {
+                    {{bx - 2, by}, {bx + 2, by}},
+                    {{bx, by - 2}, {bx, by + 2}}
+                };
+                for (int j = 0; j < 2; j++) {
+                    Shape s = {&bl[j], 1, (SDL_Color){255, 0, 0, 255}};
+                    vg_draw_shape(&s, (Vec2){0, 0}, 0.0f, 1.0f);
+                }
+            }
         }
         /* UFO (red cross) */
         if (ufo.active) {
@@ -3611,12 +4096,14 @@ void game_render() {
                 }
             }
         } else if (settings_tab == 1) { // AUDIO
-            char b0[64], b1[64], b2[64];
+            char b0[64], b1[64], b2[64], b3[64], b4[64];
             sprintf(b0, "MASTER VOLUME:  < %d%% >", settings_volume);
             sprintf(b1, "SFX VOLUME:  < %d%% >", settings_sfx_vol);
             sprintf(b2, "MUSIC VOLUME:  < %d%% >", settings_music_vol);
-            const char* items[] = {b0, b1, b2};
-            for (int i = 0; i < 3; i++) {
+            sprintf(b3, "DYNAMIC RANGE:  < %s >", on_off[settings_dynamic_range]);
+            sprintf(b4, "MUTE UNFOCUSED:  < %s >", on_off[settings_mute_unfocused]);
+            const char* items[] = {b0, b1, b2, b3, b4};
+            for (int i = 0; i < 5; i++) {
                 SDL_Color ic = (menu_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
                 vf_draw_string_centered(items[i], SCREEN_WIDTH/2.0f, base_y + i*step, 18, ic);
                 if (menu_selection == i) {
@@ -3650,7 +4137,7 @@ void game_render() {
             for (int i = 0; i < 5; i++) {
                 SDL_Color ic = (menu_selection == i) ? (SDL_Color){255,255,80,255} : main_color;
                 vf_draw_string_centered(items[i], SCREEN_WIDTH/2.0f, base_y + i*step, 18, ic);
-                if (menu_selection == i && i < 4) {
+                if (menu_selection == i) {
                     float tw = (strlen(items[i]) * 18 * 1.2f) - (18 * 0.2f);
                     vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 35.0f, base_y + i*step, 18, ic);
                 }
@@ -3692,26 +4179,10 @@ void game_render() {
                 }
             }
         } else {
-            // Controller binds
-            static const char* btn_names[] = {
-                "A","B","X","Y","BACK","GUIDE","START","LSTICK","RSTICK",
-                "LB","RB","DPAD_UP","DPAD_DOWN","DPAD_LEFT","DPAD_RIGHT","MISC"
-            };
-            vf_draw_string_centered("ENTER TO REBIND", SCREEN_WIDTH/2.0f, 100, 12, (SDL_Color){100,100,120,255});
-            float ct_row_h = (float)(SCREEN_HEIGHT - 160) / CT_COUNT;
-            if (ct_row_h > 44.0f) ct_row_h = 44.0f;
-            for (int i = 0; i < CT_COUNT; i++) {
-                SDL_Color ic = (keybind_selection == i) ? (SDL_Color){255,180,50,255} : main_color;
-                int bval = (int)ctrl_binds[i];
-                const char* bname = (bval >= 0 && bval < 16) ? btn_names[bval] : "---";
-                char row[64]; sprintf(row, "%-12s  %s", ct_action_names[i], bname);
-                float y = 120.0f + i * ct_row_h;
-                vf_draw_string_centered(row, SCREEN_WIDTH/2.0f, y, 16, ic);
-                if (keybind_selection == i) {
-                    float tw = (strlen(row) * 16 * 1.2f) - (16*0.2f);
-                    vf_draw_string(">", SCREEN_WIDTH/2.0f - tw/2.0f - 30.0f, y, 16, ic);
-                }
-            }
+            // Render gamepad controller and keybind lines in Keybinds page
+            float cx = SCREEN_WIDTH / 2.0f;
+            float cy = SCREEN_HEIGHT / 2.0f;
+            render_controller_binds_page(cx, cy, keybind_selection, ctrl_binds, ct_action_names);
             if (!g_controller) {
                 vf_draw_string_centered("NO CONTROLLER DETECTED", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT - 90, 14, (SDL_Color){255,80,80,180});
             }

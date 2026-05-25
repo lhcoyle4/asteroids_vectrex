@@ -19,5 +19,7 @@ void vg_clear();
 void vg_present();
 void vg_set_shake(int dx, int dy);
 void vg_set_brightness(int level);
+void vg_set_monochrome(int enable);
+void vg_set_chromatic_aberration(float strength);
 
 #endif /* VECTOR_GRAPHICS_H */

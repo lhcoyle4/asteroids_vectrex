@@ -16,16 +16,34 @@ void vg_init(SDL_Renderer *renderer, int width, int height) {
     win_w = width;
     win_h = height;
 
-    persistence_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, width, height);
-    SDL_SetTextureBlendMode(persistence_tex, SDL_BLENDMODE_BLEND);
+    /* Try ABGR8888 first — friendlier to WebGL/little-endian. */
+    persistence_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
+                                        SDL_TEXTUREACCESS_TARGET, width, height);
+    if (!persistence_tex) {
+        SDL_Log("vg_init: ABGR8888 target texture failed (%s), trying RGBA8888", SDL_GetError());
+        persistence_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                                            SDL_TEXTUREACCESS_TARGET, width, height);
+    }
+    if (persistence_tex) {
+        SDL_SetTextureBlendMode(persistence_tex, SDL_BLENDMODE_BLEND);
+        SDL_Log("vg_init: persistence texture created OK (%dx%d)", width, height);
+    } else {
+        SDL_Log("vg_init: all texture formats failed (%s) — phosphor effect disabled", SDL_GetError());
+    }
 }
 
 void vg_apply_persistence(float fade_amount) {
+    if (!persistence_tex) {
+        /* Fallback: no offscreen texture — clear each frame so draws are fresh. */
+        SDL_SetRenderDrawColor(vg_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(vg_renderer);
+        return;
+    }
     SDL_SetRenderTarget(vg_renderer, persistence_tex);
-    
+
     // Dim the existing buffer for the "phosphor decay" effect
     SDL_SetRenderDrawBlendMode(vg_renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(vg_renderer, 0, 0, 0, (Uint8)(fade_amount * 255)); 
+    SDL_SetRenderDrawColor(vg_renderer, 0, 0, 0, (Uint8)(fade_amount * 255));
     SDL_Rect rect = {0, 0, win_w, win_h};
     SDL_RenderFillRect(vg_renderer, &rect);
 
@@ -33,7 +51,7 @@ void vg_apply_persistence(float fade_amount) {
 }
 
 void vg_draw_shape(Shape *shape, Vec2 pos, float angle, float scale) {
-    SDL_SetRenderTarget(vg_renderer, persistence_tex);
+    if (persistence_tex) SDL_SetRenderTarget(vg_renderer, persistence_tex);
     SDL_SetRenderDrawColor(vg_renderer, shape->color.r, shape->color.g, shape->color.b, shape->color.a);
     SDL_SetRenderDrawBlendMode(vg_renderer, SDL_BLENDMODE_ADD);
 
@@ -58,13 +76,13 @@ void vg_draw_shape(Shape *shape, Vec2 pos, float angle, float scale) {
         SDL_SetRenderDrawColor(vg_renderer, shape->color.r, shape->color.g, shape->color.b, shape->color.a);
     }
 
-    SDL_SetRenderTarget(vg_renderer, NULL);
+    if (persistence_tex) SDL_SetRenderTarget(vg_renderer, NULL);
 }
 
 void vg_draw_shape_trail(Shape *shape, Vec2 *trail_pos, float *trail_angle,
                          int trail_len, int trail_head, float scale,
                          float base_alpha, float decay) {
-    SDL_SetRenderTarget(vg_renderer, persistence_tex);
+    if (persistence_tex) SDL_SetRenderTarget(vg_renderer, persistence_tex);
     SDL_SetRenderDrawBlendMode(vg_renderer, SDL_BLENDMODE_ADD);
 
     for (int step = 1; step < trail_len; step++) {
@@ -94,15 +112,19 @@ void vg_draw_shape_trail(Shape *shape, Vec2 *trail_pos, float *trail_angle,
         }
     }
 
-    SDL_SetRenderTarget(vg_renderer, NULL);
+    if (persistence_tex) SDL_SetRenderTarget(vg_renderer, NULL);
 }
 
 void vg_clear() {
-
-    SDL_SetRenderTarget(vg_renderer, persistence_tex);
-    SDL_SetRenderDrawColor(vg_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(vg_renderer);
-    SDL_SetRenderTarget(vg_renderer, NULL);
+    if (persistence_tex) {
+        SDL_SetRenderTarget(vg_renderer, persistence_tex);
+        SDL_SetRenderDrawColor(vg_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(vg_renderer);
+        SDL_SetRenderTarget(vg_renderer, NULL);
+    } else {
+        SDL_SetRenderDrawColor(vg_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(vg_renderer);
+    }
 }
 
 static int shake_dx = 0;
@@ -114,13 +136,17 @@ void vg_set_shake(int dx, int dy) {
 }
 
 void vg_present() {
-    SDL_SetRenderDrawColor(vg_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(vg_renderer);
-    if (shake_dx != 0 || shake_dy != 0) {
-        SDL_Rect dest = {shake_dx, shake_dy, win_w, win_h};
-        SDL_RenderCopy(vg_renderer, persistence_tex, NULL, &dest);
-    } else {
-        SDL_RenderCopy(vg_renderer, persistence_tex, NULL, NULL);
+    if (persistence_tex) {
+        /* Blit offscreen buffer to screen (with optional screen-shake offset). */
+        SDL_SetRenderDrawColor(vg_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(vg_renderer);
+        if (shake_dx != 0 || shake_dy != 0) {
+            SDL_Rect dest = {shake_dx, shake_dy, win_w, win_h};
+            SDL_RenderCopy(vg_renderer, persistence_tex, NULL, &dest);
+        } else {
+            SDL_RenderCopy(vg_renderer, persistence_tex, NULL, NULL);
+        }
     }
+    /* If no persistence_tex, drawing went directly to the screen — just present. */
     SDL_RenderPresent(vg_renderer);
 }

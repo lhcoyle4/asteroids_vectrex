@@ -41,6 +41,9 @@ jobs:
             -s USE_SDL=2 \
             -s USE_SDL_MIXER=2 \
             -s ALLOW_MEMORY_GROWTH=1 \
+            -s INITIAL_MEMORY=67108864 \
+            -s STACK_SIZE=5242880 \
+            -s SDL2_GL_ENABLE_GET_PROC_ADDRESS=1 \
             --shell-file src/wasm_shell.html \
             -o index.html \
             src/main.c src/vector_graphics.c src/game.c src/vector_font.c src/audio.c

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+extern SDL_Renderer *g_renderer; /* defined in main.c */
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -53,7 +54,10 @@ typedef enum {
     STATE_SETTINGS,
     STATE_KEYBINDS,
     STATE_ATTRACT_INSTRUCTIONS,
-    STATE_ATTRACT_GAMEPLAY
+    STATE_ATTRACT_GAMEPLAY,
+    STATE_SHOP,
+    STATE_WARP_MENU,
+    STATE_LOAD_MENU
 } GameState;
 
 // Cheat tracking
@@ -110,6 +114,7 @@ typedef struct {
     Line lines[16];
     int line_count;
     int has_shield; // 1 = shielded asteroid (Level >= 3)
+    int material;  // 0=rock 1=metal 2=crystal
     Vec2 trail_pos[PHOS_TRAIL_LEN];
     float trail_ang[PHOS_TRAIL_LEN];
     int trail_head;
@@ -165,6 +170,7 @@ typedef struct {
     float radius;
     float orbit_angle;   /* current orbit angle around player */
     float contact_timer; /* time player has been close */
+    int faction; /* 0=friendly 1=hostile */
 } NpcEntity;
 
 typedef struct {
@@ -342,7 +348,7 @@ typedef enum {
     KB_COUNT
 } KeyAction;
 static SDL_Scancode keybinds[KB_COUNT] = {
-    SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_UP, SDL_SCANCODE_SPACE,
+    SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_TAB, SDL_SCANCODE_SPACE,
     SDL_SCANCODE_ESCAPE, SDL_SCANCODE_RETURN,
     SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_4,
     SDL_SCANCODE_TAB
@@ -361,6 +367,7 @@ static int keybind_page = 0; // 0=keyboard  1=controller
 typedef enum {
     CT_THRUST=0, CT_FIRE, CT_HYPERSPACE,
     CT_ABILITY1, CT_ABILITY2, CT_ABILITY3, CT_ABILITY4,
+    CT_MINIMAP,
     CT_COUNT
 } CtrlAction;
 static SDL_GameControllerButton ctrl_binds[CT_COUNT] = {
@@ -381,6 +388,61 @@ static int ctrl_rebinding_action = -1;
 static float twin_stick_fire_angle = 0.0f;
 static int   twin_stick_fire_active = 0;
 
+
+// ── Resource system ───────────────────────────────────────────────────────
+static int res_void_steel     = 0;
+static int res_autodyne_frags = 0;
+static int res_hex_modules    = 0;
+static int res_ammo           = 0;
+static int res_rockets        = 0;
+static int res_contraband     = 0;
+static int res_isotopes       = 0;
+static int res_coolant        = 0;
+static int res_medicinals     = 0;
+static int res_biomatter      = 0;
+static int res_shield_caps    = 0;
+static int res_alien_flora    = 0;
+
+// ── Fuel system ──────────────────────────────────────────────────────────
+static float fuel_current = 100.0f;
+static float fuel_max     = 100.0f;
+
+// ── Player death animation ────────────────────────────────────────────────
+static Vec2  player_death_pos   = {0.0f, 0.0f};
+static float player_death_angle = 0.0f;
+static float player_death_timer = 0.0f;
+
+// ── Player drone system ───────────────────────────────────────────────────
+#define MAX_PLAYER_DRONES 4
+typedef enum {
+    DRONE_FIGHTER=0, DRONE_REPAIR, DRONE_POINT_DEF, DRONE_SURVEY, DRONE_COUNT
+} PlayerDroneType;
+typedef struct {
+    int active;
+    PlayerDroneType type;
+    Vec2  pos;
+    float orbit_offset;
+    float orbit_radius;
+    float orbit_angle;
+    float shoot_timer;
+    float timer;
+} PlayerDrone;
+static PlayerDrone player_drones[MAX_PLAYER_DRONES];
+
+// ── Shop & warp ───────────────────────────────────────────────────────────
+#define SHOP_ITEMS_PER_PAGE 14
+static int shop_page = 0;
+static int shop_sel  = 0;
+#define MAX_WARP_LOCS 8
+typedef struct { Vec2 pos; char label[32]; } WarpLoc;
+static WarpLoc warp_locs[MAX_WARP_LOCS];
+static int   warp_loc_count  = 0;
+static int   warp_menu_sel   = 0;
+static float warp_drive_range = 3000.0f;
+
+// NPC factions
+#define NPC_FRIENDLY 0
+#define NPC_HOSTILE  1
 static float god_mode_msg_timer = 0.0f;
 static int is_attract_ai = 0;
 static float idle_timer = 0.0f;
@@ -668,6 +730,17 @@ static int on_collision(int is_player_asteroid, int asteroid_idx) {
             }
             int orb_val = (asteroids[asteroid_idx].size == 3) ? 20 : ((asteroids[asteroid_idx].size == 2) ? 10 : 4);
             spawn_orb(asteroids[asteroid_idx].pos, orb_val);
+            // Resource drop on asteroid kill
+            {
+                int roll = rand() % 100;
+                if (asteroids[asteroid_idx].material == 1 || asteroids[asteroid_idx].has_shield) {
+                    if (roll < 60) res_void_steel++; else if (roll < 80) res_autodyne_frags++; else res_hex_modules++;
+                } else if (asteroids[asteroid_idx].material == 2) {
+                    if (roll < 50) res_isotopes++; else if (roll < 75) res_shield_caps++; else res_hex_modules++;
+                } else {
+                    if (roll < 40) res_alien_flora++; else if (roll < 55) res_biomatter++; else if (roll < 65) res_ammo++;
+                }
+            }
             score += 200;
             audio_play(SFX_EXPLOSION_LG);
             
@@ -980,6 +1053,7 @@ static void trigger_hyperspace() {
         player.active = 0;
         audio_play(SFX_EXPLOSION_LG);
         spawn_particles(player.pos, 30, (SDL_Color){255, 100, 100, 255});
+        player_death_pos = player.pos; player_death_angle = player.angle; player_death_timer = 1.8f;
         lives--;
         if (lives <= 0) {
             game_state = STATE_GAMEOVER;
@@ -1162,6 +1236,12 @@ static void start_new_game() {
     audio_stop(SFX_THRUST);
     audio_stop(SFX_UFO_LOOP);
 
+    res_void_steel=0; res_autodyne_frags=0; res_hex_modules=0;
+    res_ammo=0; res_rockets=0; res_contraband=0;
+    res_isotopes=0; res_coolant=0; res_medicinals=0;
+    res_biomatter=0; res_shield_caps=0; res_alien_flora=0;
+    fuel_current=fuel_max=100.0f;
+    for(int di=0;di<MAX_PLAYER_DRONES;di++) player_drones[di].active=0;
     reset_player();
     start_next_level();
     game_state = STATE_PLAYING;
@@ -1479,6 +1559,9 @@ void game_handle_input(SDL_Event *event) {
     }
 }
 
+
+static float respawn_blink = 0.0f;
+static int respawn_phase = 0;
 
 void game_update(float delta_time) {
     fps_accum += delta_time;
@@ -1954,13 +2037,20 @@ void game_update(float delta_time) {
             player.invuln_timer -= delta_time;
         }
     } else {
-        // Wait, if player is dead and we have lives left, spawn them after 1.5 seconds
-        static float spawn_delay = 1.5f;
+        // Respawn animation state
+        /* respawn_blink/phase now file-scope */
+        static float spawn_delay = 2.2f;
         if (lives > 0) {
             spawn_delay -= delta_time;
+            if (spawn_delay <= 0.6f && respawn_phase == 0) {
+                respawn_phase = 1;
+                respawn_blink = 0.0f;
+            }
             if (spawn_delay <= 0.0f) {
                 reset_player();
-                spawn_delay = 1.5f;
+                spawn_delay = 2.2f;
+                respawn_phase = 0;
+                respawn_blink = 0.0f;
             }
         }
     }
@@ -2847,6 +2937,15 @@ void game_render() {
         }
     }
 
+    // --- Death ghost ---
+    if (!player.active && lives > 0) {
+        static float ghost_t = 0.0f; ghost_t += 0.016f;
+        if (respawn_phase == 1) { respawn_blink += 0.016f; }
+        float ga = 0.5f + 0.5f * sinf(ghost_t * 6.0f);
+        SDL_Color gc = {255, 80, 80, (Uint8)(ga * 120)};
+        Shape gs = {ship_lines, sizeof(ship_lines)/sizeof(Line), gc};
+        vg_draw_shape(&gs, player_death_pos, player_death_angle, 1.0f);
+    }
     // --- Draw Player ---
     if (player.active) {
         int visible = 1;
@@ -2971,6 +3070,29 @@ void game_render() {
     sprintf(hud_text, "%d / %d", player_xp, xp_threshold);
     { float tw = (strlen(hud_text) * 10 * 1.2f) - (10 * 0.2f);
       vf_draw_string(hud_text, xp_bar_x1 - tw, xp_bar_y - 15.0f, 10, (SDL_Color){80, 180, 80, 180}); }
+
+        // Fuel gauge
+        {
+            float fpct = (fuel_max > 0.0f) ? (fuel_current / fuel_max) : 0.0f;
+            int fw = 120, fh = 8;
+            int fx = 42, fy = (int)(SCREEN_HEIGHT - 54);
+            SDL_Color fc = fpct > 0.3f ? (SDL_Color){60,220,80,200} :
+                           fpct > 0.1f ? (SDL_Color){255,200,40,200} :
+                                         (SDL_Color){255,60,60,220};
+            SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(g_renderer, 30, 30, 30, 180);
+            SDL_Rect fbg = {fx-1, fy-1, fw+2, fh+2}; SDL_RenderFillRect(g_renderer, &fbg);
+            SDL_SetRenderDrawColor(g_renderer, fc.r, fc.g, fc.b, fc.a);
+            SDL_Rect ffl = {fx, fy, (int)(fw * fpct), fh}; SDL_RenderFillRect(g_renderer, &ffl);
+            char fbuf[24]; sprintf(fbuf, "FUEL %d%%", (int)(fpct*100));
+            vf_draw_string(fbuf, fx, fy - 16, 11, fc);
+            char rbuf[96];
+            sprintf(rbuf, "VS:%d AF:%d HX:%d AM:%d RK:%d", res_void_steel, res_autodyne_frags, res_hex_modules, res_ammo, res_rockets);
+            vf_draw_string(rbuf, fx, fy + fh + 4, 10, (SDL_Color){160,160,180,200});
+            if (res_contraband > 0) {
+                vf_draw_string("! CONTRABAND", fx, fy + fh + 16, 10, (SDL_Color){255,80,80,220});
+            }
+        }
 
     // Upgrade icon strip (right side of screen, abbreviated)
     // Starts below the player level label (y≈50) and stops well above the XP bar (y≈870)
@@ -3139,6 +3261,66 @@ void game_render() {
             {{m, SCREEN_HEIGHT - m}, {m, m}}
         };
         Shape es = {el, 4, ef};
+
+    // ── Shop overlay ─────────────────────────────────────────────────────
+    if (game_state == STATE_SHOP) {
+        vg_set_camera((Vec2){0,0});
+        SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(g_renderer, 0, 5, 15, 200);
+        SDL_Rect bg = {60, 40, SCREEN_WIDTH-120, SCREEN_HEIGHT-80}; SDL_RenderFillRect(g_renderer, &bg);
+        vf_draw_string_centered("HOME STATION EXCHANGE", SCREEN_WIDTH/2.0f, 60, 20, (SDL_Color){100,220,255,255});
+        vf_draw_string_centered("[ ESC ] CLOSE", SCREEN_WIDTH/2.0f, 88, 11, (SDL_Color){120,120,140,200});
+        static const char* shop_names[] = {
+            "FUEL CELLS (25u)", "FULL REFUEL", "THRUSTER UPGRADE",
+            "CANNON UPGRADE", "HULL PLATING", "EMERGENCY LIFE",
+            "ROCKET PACK (+5)", "FIGHTER DRONE", "REPAIR DRONE",
+            "WARP RANGE +1000u", "FUEL TANK UPGRADE", "AMMO RESUPPLY",
+            "VOID STEEL SMELTER", "AUTODYNE SCANNER"
+        };
+        #define SHOP_TOTAL 14
+        for (int si = 0; si < SHOP_TOTAL && si < SHOP_ITEMS_PER_PAGE; si++) {
+            float iy = 115.0f + si * 42.0f;
+            SDL_Color ic = (si == shop_sel) ? (SDL_Color){255,255,80,255} : (SDL_Color){180,200,220,200};
+            if (si == shop_sel) {
+                SDL_SetRenderDrawColor(g_renderer, 40,80,120,80);
+                SDL_Rect hr = {80, (int)iy-4, SCREEN_WIDTH-160, 36}; SDL_RenderFillRect(g_renderer, &hr);
+            }
+            vf_draw_string(si == shop_sel ? "> " : "  ", 85.0f, iy, 13, ic);
+            vf_draw_string(shop_names[si], 110.0f, iy, 13, ic);
+        }
+        char inv[128];
+        sprintf(inv, "INV: VS:%d AF:%d HX:%d IS:%d AM:%d RK:%d",
+            res_void_steel, res_autodyne_frags, res_hex_modules, res_isotopes, res_ammo, res_rockets);
+        vf_draw_string_centered(inv, SCREEN_WIDTH/2.0f, SCREEN_HEIGHT-70, 10, (SDL_Color){140,180,200,200});
+        vg_set_camera(camera_pos);
+    }
+
+    // ── Warp menu overlay ─────────────────────────────────────────────────
+    if (game_state == STATE_WARP_MENU) {
+        vg_set_camera((Vec2){0,0});
+        SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(g_renderer, 0, 10, 30, 180);
+        SDL_Rect wbg = {200, 150, SCREEN_WIDTH-400, SCREEN_HEIGHT-300}; SDL_RenderFillRect(g_renderer, &wbg);
+        vf_draw_string_centered("WARP DRIVE -- SAVED LOCI", SCREEN_WIDTH/2.0f, 165, 16, (SDL_Color){100,220,255,255});
+        if (warp_loc_count == 0) {
+            vf_draw_string_centered("NO LOCI SAVED", SCREEN_WIDTH/2.0f, 230, 11, (SDL_Color){160,160,180,200});
+        } else {
+            for (int wi = 0; wi < warp_loc_count; wi++) {
+                float wy = 200.0f + wi * 40.0f;
+                float wdx = warp_locs[wi].pos.x - player.pos.x;
+                float wdy = warp_locs[wi].pos.y - player.pos.y;
+                float wdist = sqrtf(wdx*wdx + wdy*wdy);
+                int in_range = (wdist <= warp_drive_range) && (fuel_current >= 20.0f);
+                SDL_Color wc = (wi == warp_menu_sel) ? (SDL_Color){255,255,80,255} :
+                               in_range ? (SDL_Color){100,255,180,220} : (SDL_Color){180,80,80,200};
+                char wbuf[80]; sprintf(wbuf, "%s  [%.0fu]%s", warp_locs[wi].label, wdist, in_range ? "" : " OUT OF RANGE");
+                vf_draw_string_centered(wbuf, SCREEN_WIDTH/2.0f, wy, 13, wc);
+            }
+        }
+        vf_draw_string_centered("ENTER=WARP  ESC=CANCEL  (20 FUEL)", SCREEN_WIDTH/2.0f, SCREEN_HEIGHT-165, 11, (SDL_Color){140,140,160,200});
+        vg_set_camera(camera_pos);
+    }
+
         vg_draw_shape(&es, (Vec2){0,0}, 0.0f, 1.0f);
     }
 

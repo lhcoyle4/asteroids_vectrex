@@ -2,11 +2,9 @@
 
 ## Antigravity (Gemini)
 *   **Current Branch:** `agent/gemini`
-*   **Active Task:** Implementing Fuligin world-building features (Modular architecture)
+*   **Active Task:** Idle (Waiting for Claude's UI Overhaul to finish)
 *   **Locked Files/Paths:**
-    *   `[LOCKED]` `/src/world_builder.c`
-    *   `[LOCKED]` `/include/world_builder.h`
-    *   `[LOCKED]` `/AGENT_STATE.md`
+    *   None
 
 ## Claude
 *   **Current Branch:** `agent/claude`

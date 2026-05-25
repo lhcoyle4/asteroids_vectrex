@@ -4400,6 +4400,52 @@ void game_update(float dt)
     update_ufo_bullets(dt);
     update_particles_orbs_npcs(dt);
     update_collisions(dt);
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!asteroids[i].active) continue;
+        for (int j = i + 1; j < MAX_ASTEROIDS; j++) {
+            if (!asteroids[j].active) continue;
+            
+            float dx = asteroids[j].pos.x - asteroids[i].pos.x;
+            float dy = asteroids[j].pos.y - asteroids[i].pos.y;
+            float dist_sq = dx * dx + dy * dy;
+            float r_sum = asteroids[i].radius + asteroids[j].radius;
+            
+            if (dist_sq < r_sum * r_sum && dist_sq > 0.0001f) {
+                float dist = sqrtf(dist_sq);
+                float nx = dx / dist;
+                float ny = dy / dist;
+                
+                float vx = asteroids[j].vel.x - asteroids[i].vel.x;
+                float vy = asteroids[j].vel.y - asteroids[i].vel.y;
+                float vn = vx * nx + vy * ny;
+                
+                float m1 = (float)(asteroids[i].size * asteroids[i].size);
+                float m2 = (float)(asteroids[j].size * asteroids[j].size);
+                if (m1 < 1.0f) m1 = 1.0f;
+                if (m2 < 1.0f) m2 = 1.0f;
+                
+                if (vn < 0.0f) {
+                    float j_impulse = -(2.0f * vn) / (1.0f / m1 + 1.0f / m2);
+                    asteroids[i].vel.x -= (j_impulse / m1) * nx;
+                    asteroids[i].vel.y -= (j_impulse / m1) * ny;
+                    asteroids[j].vel.x += (j_impulse / m2) * nx;
+                    asteroids[j].vel.y += (j_impulse / m2) * ny;
+                }
+                
+                float overlap = r_sum - dist;
+                float inv_m1 = 1.0f / m1;
+                float inv_m2 = 1.0f / m2;
+                float sum_inv_mass = inv_m1 + inv_m2;
+                
+                asteroids[i].pos.x -= nx * overlap * (inv_m1 / sum_inv_mass);
+                asteroids[i].pos.y -= ny * overlap * (inv_m1 / sum_inv_mass);
+                asteroids[j].pos.x += nx * overlap * (inv_m2 / sum_inv_mass);
+                asteroids[j].pos.y += ny * overlap * (inv_m2 / sum_inv_mass);
+            }
+        }
+    }
+
     update_spawning(dt);
     update_progression(dt);
     update_camera_and_audio(dt);
